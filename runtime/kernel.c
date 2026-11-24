@@ -665,8 +665,11 @@ static void hle_fn_trace(CPU* RESTRICT c, u64 entry){
   u64 a0=c->x[0], a1=c->x[1], a2=c->x[2], a3=c->x[3], lr=c->x[30];
   if(g_tf[k].n<8) LOG("trace: %llx(%llx, %llx, %llx, %llx) from %llx called\n",(unsigned long long)entry,(unsigned long long)a0,(unsigned long long)a1,(unsigned long long)a2,(unsigned long long)a3,(unsigned long long)lr);   /* a call that never returns still shows */
   g_tf[k].f(c,entry);
-  if(g_tf[k].n<8 && ++g_tf[k].n) LOG("trace: %llx(%llx, %llx, %llx, %llx) from %llx -> %llx%s\n",(unsigned long long)entry,(unsigned long long)a0,(unsigned long long)a1,(unsigned long long)a2,(unsigned long long)a3,
-    (unsigned long long)lr,(unsigned long long)c->x[0], c->pc==lr? "" : " (tail call)"); }
+  if(g_tf[k].n<8 && ++g_tf[k].n){
+    /* the first argument is often an out pointer (PosixTime*, CalendarTime*...): show the 16 bytes it holds now */
+    u64 o0=0, o1=0; int outp= a0>=0x1000000ull && a0<(1ull<<39) && !(a0&7); if(outp){ memcpy(&o0,GP(a0),8); memcpy(&o1,GP(a0+8),8); }
+    LOG("trace: %llx(%llx, %llx, %llx, %llx) from %llx -> %llx%s [x0 now %016llx %016llx]\n",(unsigned long long)entry,(unsigned long long)a0,(unsigned long long)a1,(unsigned long long)a2,(unsigned long long)a3,
+      (unsigned long long)lr,(unsigned long long)c->x[0], c->pc==lr? "" : " (tail call)",(unsigned long long)o0,(unsigned long long)o1); } }
 
 /* SWR_TRACE_DYN=lo-hi,clo-chi (hex): logs dynamic calls (through the dispatch table) to entries in [lo,hi) made
    from return addresses in [clo,chi), e.g. an NRO calling into main. Each target is logged once. */

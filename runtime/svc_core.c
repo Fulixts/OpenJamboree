@@ -401,8 +401,12 @@ static SvcObj* new_setsys(void){ return svcobj_new("set:sys",setsys_disp,0); }
 
 /* ================================================================ time */
 static KShmem* g_time_shm;
+/* SWR_TRACE_TIME=1: log every time service call (which clock or conversion the game uses and what it gets) */
+static int time_trace(void){ static int v=-1; if(v<0){ const char* e=getenv("SWR_TRACE_TIME"); v= e && *e=='1'; } return v; }
+#define TT(...) do{ if(time_trace()) LOG(__VA_ARGS__); }while(0)
 
 static int sysclock_disp(SvcObj* o, IpcCtx* c){
+  TT("time: system clock cmd %u (now %lld)\n",c->cmd,(long long)plat_unix_time());
   switch(c->cmd){
     case 0: out64(c,(u64)plat_unix_time()); return 0;
     case 1: return 0;
@@ -460,6 +464,7 @@ static void clock_snapshot(u8* p, u8 type, const u8* uctx, const u8* nctx){
 
 static int tz_disp(SvcObj* o, IpcCtx* c){
   { static int init; if(!init){ init=1; g_tz_off=plat_tz_offset(); LOG("time: PC time zone UTC%+.1f\n",g_tz_off/3600.0); } }
+  TT("time: time zone cmd %u (arg %lld)\n",c->cmd,(long long)in64(c,0));
   switch(c->cmd){
     case 0: { char n[0x24]; memset(n,0,sizeof n); strcpy(n,"UTC"); outbytes(c,n,0x24); return 0; }
     case 1: return 0;
@@ -490,13 +495,18 @@ static void time_shm_update(void){
     for(int k=0;k<2;k++){ u8* e=q+8+k*0x20; i64 tp=0; memcpy(e,&off,8); memcpy(e+8,&tp,8); memcpy(e+16,g_clock_id,16); } }
   /* auto correction {u32 counter; bool[2]} at 0xC8 */
   memcpy(p+0xC8,&cnt,4); p[0xCC]=1; p[0xCD]=1;
-  /* ContinuousAdjustmentTimePoint (17.0+) {u32 counter; pad; 2 x {rtc_offset, diff_scale, shift+pad, lower{t,id},
-     upper{t,id}}} at 0xD0 */
+  /* ContinuousAdjustmentTimePoint (17.0+) {u32 counter; pad; 2 x 0x38 {i64 clock_offset; i64 multiplier; i64 shift;
+     SystemClockContext {i64 offset; i64 time_point; u8 steady_clock_id[16]}}} at 0xD0. The SDK (time() and
+     timespec_get go through SharedMemoryClient::CalculateSystemClockCurrentTimespec) adds
+     max(((tick_ns-clock_offset)*multiplier>>shift)+offset, time_point) to the steady time and fails with 52340 unless
+     the id at +0x28 is the user clock's steady clock id: time() then returns 0 and Jamboree dated its saves
+     12/31/1969. All zero with our id = no adjustment */
   memcpy(p+0xD0,&cnt,4);
-  for(int k=0;k<2;k++){ u8* e=p+0xD8+k*0x48; memset(e,0,0x48); memcpy(e+0x18+8,g_clock_id,16); memcpy(e+0x30+8,g_clock_id,16); }
+  for(int k=0;k<2;k++){ u8* e=p+0xD8+k*0x38; memset(e,0,0x38); memcpy(e+0x28,g_clock_id,16); }
 }
 
 static int time_disp(SvcObj* o, IpcCtx* c){
+  TT("time: time cmd %u\n",c->cmd);
   switch(c->cmd){
     case 0: case 1: case 4: out_obj(c,svcobj_new("ISystemClock",sysclock_disp,0)); return 0;
     case 2: out_obj(c,svcobj_new("ISteadyClock",steady_disp,0)); return 0;

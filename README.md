@@ -18,8 +18,8 @@ Built on **SwitchRecomp by MZ Labs** (AGPL v3), with fixes for this game. See [`
 | Saves | created and loaded; intro skippable once a save exists |
 | Menus, Party Plaza hub, tutorial, balloon tour, mode list | works |
 | Boards | Mega Wiggler's Tree Party plays (dice, HUD, CPU turns), 55-60 FPS |
-| Minigames | not tested yet |
-| Known issues | ~6 s frozen image while some areas load; gray backdrop behind the mode list |
+| Minigames | work (played through to the results and back to the board) |
+| Known issues | none blocking so far; more minigames and boards still to test |
 
 Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT.md`](docs/JAMBOREE_PORT.md).
 
