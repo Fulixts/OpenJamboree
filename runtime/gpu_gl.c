@@ -3891,7 +3891,7 @@ static void gpu_thread(void* arg){ t_gpu_thread=1;
   for(;;){
     warm_step();
     { /* loading screens etc: log how long we went without a new image */
-      static u64 lp_t, lp_f; u64 tn=plat_ns(); if(g_frame!=lp_f){ if(lp_t && tn-lp_t>1500000000ull && g_rf){ fprintf(g_rf,"   -> %.1f s without a new image (loading or waiting)\n",(double)(tn-lp_t)/1e9); fflush(g_rf); } lp_f=g_frame; lp_t=tn; } }
+      static u64 lp_t, lp_f; u64 tn=plat_ns(); if(g_frame!=lp_f){ if(lp_t && tn-lp_t>1500000000ull){ LOG("pause: %.1f s without a new image (loading or waiting)\n",(double)(tn-lp_t)/1e9); if(g_rf){ fprintf(g_rf,"   -> %.1f s without a new image (loading or waiting)\n",(double)(tn-lp_t)/1e9); fflush(g_rf); } } lp_f=g_frame; lp_t=tn; } }
     { static u64 next_st; u64 now=plat_ns(); if(!next_st) next_st=now+5000000000ull;
       if(now>=next_st){ static int nst; nst++; next_st=now+(nst<24? 5000000000ull : 30000000000ull);
         extern volatile u64 g_gpu_submits; extern int g_frames; extern volatile u64 g_dma_copies; extern volatile u64 g_compute_launches;

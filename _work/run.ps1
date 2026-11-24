@@ -20,6 +20,7 @@ public class W {
 "@
 [W]::SetProcessDPIAware() | Out-Null
 Get-Process Recomp -ErrorAction SilentlyContinue | Stop-Process -Force
+$env:SWR_INPUT_UNFOCUSED = "1"   # keys count even if Windows keeps another window in front
 $p = Start-Process -FilePath "$game\Recomp.exe" -WorkingDirectory $game -PassThru
 $t0 = Get-Date
 # Keys: "time:vk,time:vk" e.g. "25:0x0D,27:0x58"  (vk codes)

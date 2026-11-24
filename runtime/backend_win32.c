@@ -373,7 +373,10 @@ static i32 dz(i32 v){ return (v>-7000 && v<7000)? 0 : v; }
 
 void video_poll(void){
   int focused=GetForegroundWindow()==g_hwnd && !g_controls_open;
-  u64 k=focused?keys_held:0, b=k&0xFFFFull;
+  /* SWR_INPUT_UNFOCUSED=1 (automated tests): keys posted to the window count even when it isn't in front, since
+     Windows won't let a background script bring it forward while someone uses another window */
+  static int unfocused_input=-1; if(unfocused_input<0){ const char* e=getenv("SWR_INPUT_UNFOCUSED"); unfocused_input= e && *e=='1'; }
+  u64 k=(focused || (unfocused_input && !g_controls_open))?keys_held:0, b=k&0xFFFFull;
   i32 lx=axis(k,40,42), ly=axis(k,43,41), rx=axis(k,44,46), ry=axis(k,47,45);
   if(g_mouse_mode){
     u64 now=plat_ns(); u64 elapsed=now-g_mouse_time;

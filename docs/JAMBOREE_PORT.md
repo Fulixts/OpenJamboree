@@ -16,9 +16,12 @@ The runtime source in `runtime/` is patched here; every change is in git (`git l
 | Saves | `bqSaveData`, `bqSaveData2` written to `<name>_data/save/user/`; intro skippable (+) once a save exists |
 | Menus | player count, character select (3D preview), Party Plaza hub (walk, talk, Toad's tutorial), balloon tour and mode list (`menu01.nro`), party rules, opponent/board setup |
 | Boards | Mega Wiggler's Tree Party (`bd01.nro`) loads and plays: intro, dice/items/board menu, HUD, CPU turns, 55-60 FPS |
-| Minigames | not reached yet |
-| Load hitches | ~6 s frozen image when `menu00.nro` and `bd01.nro` load (CPU side: GL thread working through a ~26 MB batch, probably ASTC decoding on the CPU) |
-| To check | mode list screen has a flat gray backdrop (may be a missing blurred background) |
+| Minigames | work: Sandwiched (played to the result, back to the board, turn 2, autosave); practice previews of Granite Getaway, Pickin' Produce (2 vs 2), Lumber Tumble |
+| New party | works: party rules tutorial (scroll with the D-pad), board and settings, turn order, first turn, autosave |
+| Pause menu on the board | works (Resume, exit to the balloon or plaza with its confirmation) |
+| Load hitches | gone: no frame gap over 1.5 s from boot to the board (`pause:` log lines); the board load dips to ~53 FPS for a few seconds |
+| Save dates | **fixed** (bug 6): parties were dated 12/31/1969 |
+| Mode list backdrop | not reproduced: the gray panel seen there is the game's own Offline Data dialog |
 | Reading the user's dump in place | works (`game_dump=`), nothing copied |
 | Input | keyboard via window messages, XInput controllers supported by the runtime |
 | Audio | audren mixer runs (DSP-ADPCM voices, BFSTM streams); not checked by ear |
@@ -26,6 +29,9 @@ The runtime source in `runtime/` is patched here; every change is in git (`git l
 Fastest path to a board with a save (keys): + skips the intro, Q+E at the title, A through the plaza, then in the
 balloon pick Mario Party; ~2.5 min from launch. With `_work/run.ps1`: `-Keys` = `12:0x0D@500,22:0x51+0x45@500,
 26:0x51+0x45@500`, then `0x20` (A) every 3 s from 34 to 100 s, `104:0x28,108:0x5A,114:0x5A`, then A every 4 s.
+With a party in progress the menus are shorter: A every 3 s from 34 s resumes it (board at ~70 s) and keeps playing
+turns and minigames. Don't send + (Enter) on the board: it opens the pause menu. The path depends on the save, so
+check screenshots rather than trusting a fixed schedule.
 
 Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z = B, C = X, V = Y, Q = L, E = R,
 1 = ZL, 3 = ZR, Enter = +, Backspace = -. The title needs L+R = **Q+E together**.
@@ -86,6 +92,21 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 - Fix (`runtime/shader.c`): the search runs back to the start of the program (it still stops at another write of the
   register or at BRX/CAL/RET/JMP). No BRX warnings left, no freeze; the balloon tour plays straight through.
 
+### Bug 6: saved parties dated 12/31/1969 (fixed)
+- The party list (Mario Party, Offline Data) showed `12/31/1969` for a party saved that day: Unix time 0 shown in a
+  US time zone.
+- `SWR_TRACE_TIME=1`: the game never asks the time service for the clock; it maps the time shared memory (`time:u`
+  cmd 20) and the SDK reads clocks from it. `SWR_TRACE_FN=a6bd2d0` (`GetStandardUserSystemClockCurrentTimespec`, called
+  by libc `time()`) returned success with a zero timespec.
+- `SharedMemoryClient::CalculateSystemClockCurrentTimespec` reads the 17.0+ `ContinuousAdjustmentTimePoint` at
+  shared memory 0xD0: `{u32 counter; pad; 2 x 0x38}`, each `{clock_offset, multiplier, shift, SystemClockContext}`,
+  and fails with 52340 unless the context's steady clock id (+0x28) matches the user clock's. The runtime wrote the
+  entries 0x48 apart with the id at +0x20, so the check always failed and `time()` gave 0.
+- Fix (`runtime/svc_core.c`, `time_shm_update`): 0x38 entries, id at +0x28, the rest zero (no adjustment). `time()`
+  now returns the PC's time. Checked: a party started after the fix is listed as 11/24/2026 (its save called
+  `StandardUserSystemClock::GetCurrentTime`, which returned the PC time). The game stamps the date when a party is
+  created, so parties started before the fix keep 12/31/1969.
+
 ### Build fixes (the source as shipped didn't build with the bundled GCC 16)
 - `plat.c`: missing `#include <math.h>`; `svc_core.c`: `ipc_warn_once` used before its declaration.
 - `plat.c`: prebuilt `vp9/win/libvpx.a` calls `_setjmp`, which the UCRT import library no longer exports; a jump shim
@@ -114,10 +135,14 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 | `SWR_OPEN_CONTEXT_USER=1` | acc:u0 131 answers with the user again (pre-bug-4 behaviour) |
 | `SWR_BRX_DUMP=1` | with `no LDC found`, lists the 64 instructions before the BRX |
 | (always) `shader: BRX at ...` | why a jump table couldn't be resolved |
+| (always) `pause: N s without a new image` | every gap over 1.5 s between frames (loads, stalls), with its length |
+| `SWR_TRACE_TIME=1` | logs every time service call (clock, time zone, shared memory) |
+| `SWR_TRACE_FN=addr,...` | (existing) now also shows the 16 bytes at the first argument after the call, for out pointers |
+| `SWR_INPUT_UNFOCUSED=1` | keys posted to the window count while it isn't in front (`run.ps1` sets it) |
 
 Tools in `_work/`: `run.ps1` (launch, screenshots through the runtime's F8 capture, keys posted to the focused game
-window with `Q+E` chords and `vk@ms` holds, kill; the runtime ignores keys while its window isn't focused, and a
-desktop capture of the GL window comes out black), `fn.sh` (print the generated C of one function), `dynsym.py`
+window with `Q+E` chords and `vk@ms` holds, kill; it sets `SWR_INPUT_UNFOCUSED=1` because Windows often refuses to
+bring the game window forward from a background script, and a desktop capture of the GL window comes out black), `fn.sh` (print the generated C of one function), `dynsym.py`
 (symbolize `SWR_TRACE_DYN` output), `build.py`
 (rebuild the runtime, ~30 s), `stackdump.c` + `resolve.py` (every host thread's stack, symbolized), `glcompile.c`
 (compile one GLSL file on the real driver and time it), `syms.py` (search the dump's symbol tables), `thr.py`
@@ -175,9 +200,9 @@ Note: the minigames and boards are NROs in `romfs/nro/NX_Release/`. The recompil
 (`nxloader.romfs_nros`), so the romfs NROs are part of the code build input as well.
 
 ## 7. Next steps
-1. Play a full turn into a minigame (first minigame NRO), then the other boards.
-2. The ~6 s load hitches (`menu00`, `bd01`): profile the GL thread batch (ASTC on the CPU vs. upload).
-3. The gray backdrop behind the mode list.
+1. More minigames (two seen so far) and the other boards; a full 10-turn party to the results.
+2. The character select's 3D preview was empty for a few seconds on one run (36-39 s); check whether it's only loading.
+3. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
 4. Recompile with `Recomp.hints` (72 addresses the static pass missed; they run in the interpreter now).
 5. Audio by ear, controller input with a real pad, performance on long sessions.
 6. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.
