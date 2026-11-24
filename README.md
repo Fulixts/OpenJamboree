@@ -19,7 +19,8 @@ Built on **SwitchRecomp by MZ Labs** (AGPL v3), with fixes for this game. See [`
 | Menus, Party Plaza hub, tutorial, balloon tour, mode list | works |
 | Boards | Mega Wiggler's Tree Party plays (dice, HUD, CPU turns), 55-60 FPS |
 | Minigames | work (played through to the results and back to the board) |
-| Known issues | none blocking so far; more minigames and boards still to test |
+| Dialogs, text, dice counters, character previews | render (they were clipped away before) |
+| Known issues | most board spaces don't show yet; more minigames and boards still to test |
 
 Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT.md`](docs/JAMBOREE_PORT.md).
 

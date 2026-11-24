@@ -23,7 +23,11 @@ The runtime source in `runtime/` is patched here; every change is in git (`git l
 | Save dates | **fixed** (bug 6): parties were dated 12/31/1969 |
 | Mode list backdrop | not reproduced: the gray panel seen there is the game's own Offline Data dialog |
 | Reading the user's dump in place | works (`game_dump=`), nothing copied |
-| Input | keyboard via window messages, XInput controllers supported by the runtime |
+| Dialog boxes, text bubbles, dice counters | **fixed** (bug 7): they were clipped away. Coin change popups use the same UI path; not seen on screen yet |
+| Characters missing (Mario in character select and on the board) | **fixed** with bug 7: all previews render |
+| Title movie / attract cutscene choppy | **fixed** (bug 8): the video texture now updates every decoded picture |
+| Board spaces | **partly fixed** (bug 9): the space under the current player shows; the rest of the path's spaces still don't |
+| Input | keyboard via window messages, XInput controllers (by label: A confirms; `pad_buttons=1` for Switch positions) |
 | Audio | audren mixer runs (DSP-ADPCM voices, BFSTM streams); not checked by ear |
 
 Fastest path to a board with a save (keys): + skips the intro, Q+E at the title, A through the plaza, then in the
@@ -107,6 +111,51 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
   `StandardUserSystemClock::GetCurrentTime`, which returned the PC time). The game stamps the date when a party is
   created, so parties started before the fix keep 12/31/1969.
 
+### Bug 7: dialog boxes, text, dice counters and some characters invisible (fixed)
+- Reported from a playthrough: no text when Toad talks in the plaza or at a shop, no remaining-spaces number while
+  walking, no coin change popup, Mario invisible in character select and on the board.
+- F5 trace of the plaza with Toad talking: the dialog's draws are all there (window, 50-glyph text draw, choices),
+  each with `result rt0: (no change)`. No scissor, no stencil, depth test off, alpha 1. Their vertices come out at
+  clip z -0.003 (layout projection `cb3 d[2].w = -0.003024`), with the depth mode zero-to-one.
+- `SET_VIEWPORT_CLIP_CONTROL` (method 0x1138, register 0x44E) was ignored. Its `GEOMETRY_CLIP` field decides
+  near/far clipping: only PASSTHRU, FRUSTUM_XYZ_CLIP and FRUSTUM_Z_CLIP clip in z; the reset value 0 (WZERO_CLIP),
+  which Jamboree leaves set, clamps depth. GL clipped the whole UI layer at z < 0.
+- Fix (`runtime/gpu_gl.c`, `apply_state`): `GL_DEPTH_CLAMP` unless GEOMETRY_CLIP is 1, 3 or 5 (yuzu's
+  `depth_clamp_disabled`), with the register in the state signature. `SWR_NO_DEPTH_CLAMP=1` turns it off.
+- Checked: Toad's plaza dialog ("Climb aboard the Hot-Air Balloon...") and choices, the Item Shop bubble, Toad's
+  "not enough coins" message, dice counters over the players, and Mario, Luigi, Daisy, Waluigi, Toadette and Toad in
+  character select all render. Title, menus and the board are unchanged otherwise.
+
+### Bug 8: title movie and attract cutscene at ~10-20 FPS (fixed)
+- The movie decodes at 60 pictures a second (`video: N NVDEC jobs`), but the VIC writes each picture into guest
+  memory on the CPU, and the texture over it was only re-checked on the texture cache's schedule (every 4-20 frames).
+- Fix (`runtime/host1x.c`, `runtime/gpu_gl.c`): the VIC reports each output picture (`gpu_note_ext_write`); a texture
+  over it is checked again on its next use. A 7 s recording of the cutscene went from 224 to 288 distinct frames,
+  and the gaps of 3-4 frames between pictures are gone.
+
+### Bug 9: board spaces missing (partly fixed)
+- Each board frame starts with two draws that have no color or depth target and no fragment shader: vertex shaders
+  (`9fe02e952fb8622e`, 62 vertices; `3247054149f32e6f`, 3 vertices) that write storage buffers (an `atomicAdd`
+  counter, then 0xB4 bytes of arguments the next GPFIFO entry feeds to a draw macro). The runtime dropped every
+  target-less draw (`DRAW SKIPPED: no target`).
+- Fixes: such draws now run with `GL_RASTERIZER_DISCARD` (`SWR_NO_SIDE_DRAWS=1` drops them like before), and a draw
+  held back for instance merging is flushed before a GPFIFO entry is read, so reading the entry waits for the draw's
+  storage writes (`SWR_NO_ENTRY_FLUSH=1` turns that off).
+- Result: the space under the current player and some nearby ones render; most of the path's spaces still don't.
+  Ruled out: depth bias (no draw uses it), EQUAL-after-prepass depth mismatch (forcing LEQUAL changed nothing), the
+  buffer caches (`SWR_VB_FULLCHECK=1`, `SWR_NO_SSBO_CACHE=1`), zero-length vertex streams, occlusion queries (the
+  runtime always reports visible). Next: find the space draws in a trace (the target-less pass's 62 vertices match the
+  board's object count) and follow the argument buffer at `532b7d200` to the draw macro that reads it.
+
+### Recompiling with the hints file: slower, not adopted
+- Rebuilding `Recomp_code.dll` with `Recomp.hints` (109 addresses) took the board from 60 to ~42 FPS with the GPU
+  thread ~25% busy (CPU bound), and fixed nothing visible. The previous DLL stays.
+
+### Controller: Xbox A acted as Switch B
+- The XInput mapping was by position (Xbox B = Switch A), so the confirm button was on the right and Xbox A went back.
+  New `[Controls] pad_buttons`: 0 (default) maps by label (Xbox A = A confirms), 1 restores the Switch positions.
+  Jamboree's button prompts are position glyphs (four dots), which match `pad_buttons=1`.
+
 ### Build fixes (the source as shipped didn't build with the bundled GCC 16)
 - `plat.c`: missing `#include <math.h>`; `svc_core.c`: `ipc_warn_once` used before its declaration.
 - `plat.c`: prebuilt `vp9/win/libvpx.a` calls `_setjmp`, which the UCRT import library no longer exports; a jump shim
@@ -139,6 +188,11 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 | `SWR_TRACE_TIME=1` | logs every time service call (clock, time zone, shared memory) |
 | `SWR_TRACE_FN=addr,...` | (existing) now also shows the 16 bytes at the first argument after the call, for out pointers |
 | `SWR_INPUT_UNFOCUSED=1` | keys posted to the window count while it isn't in front (`run.ps1` sets it) |
+| `SWR_NO_DEPTH_CLAMP=1` | ignore the viewport clip control and clip in z (pre-bug-7 behaviour) |
+| `SWR_NO_SIDE_DRAWS=1` | drop draws without targets even when they write storage buffers (pre-bug-9) |
+| `SWR_NO_ENTRY_FLUSH=1` | don't flush a held-back draw before reading a GPFIFO entry (pre-bug-9) |
+| `SWR_VB_FULLCHECK=1` | hash every cached vertex/index/storage buffer on every use (finds stale buffer bugs) |
+| (F5 trace) | each draw also lists scissor, clip control, depth bias, stencil function, vertex attribute formats; a skipped target-less draw lists its targets, stream-out state and storage writes and dumps its vertex shader |
 
 Tools in `_work/`: `run.ps1` (launch, screenshots through the runtime's F8 capture, keys posted to the focused game
 window with `Q+E` chords and `vk@ms` holds, kill; it sets `SWR_INPUT_UNFOCUSED=1` because Windows often refuses to
@@ -200,9 +254,11 @@ Note: the minigames and boards are NROs in `romfs/nro/NX_Release/`. The recompil
 (`nxloader.romfs_nros`), so the romfs NROs are part of the code build input as well.
 
 ## 7. Next steps
-1. More minigames (two seen so far) and the other boards; a full 10-turn party to the results.
-2. The character select's 3D preview was empty for a few seconds on one run (36-39 s); check whether it's only loading.
-3. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
-4. Recompile with `Recomp.hints` (72 addresses the static pass missed; they run in the interpreter now).
-5. Audio by ear, controller input with a real pad, performance on long sessions.
+1. Board spaces (bug 9): most are still missing.
+2. Plaza overview: the paving around the fountain looks noisy from far away (reported; likely the texture's lower
+   mips, ASTC decoded to BC3 on GPUs without ASTC). Not reproduced yet: needs the first-visit plaza tour.
+3. Character select: switching characters quickly stutters (new models and shaders load on demand).
+4. More minigames and the other boards; a full 10-turn party to the results.
+5. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
+6. Why the hints rebuild is slower (see above) before using it; audio by ear, performance on long sessions.
 6. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.

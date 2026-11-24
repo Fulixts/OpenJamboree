@@ -2748,7 +2748,7 @@ static void tr_draw(GpuChannel* ch, Sh* vs, Sh* fs, u64 vsa, u64 fsa, int indexe
     trace_note("  z %llx %ux%u fmt=%x test=%u func=%x write=%u stencil=%u zscale=%.9g ztrans=%.9g range=%.9g..%.9g mode=%u\n",(unsigned long long)g_zt->gva,g_zt->w,g_zt->h,g_zt->fkey,r[0x4B3],r[0x4C3],r[0x4BA],r[0x4E0],vt[2],vt[5],dn,df,r[0x35F]&1); }
   trace_note("  blend en=%u,%u indep=%u common[sep=%u eq=%x src=%x dst=%x eqa=%x srca=%x dsta=%x] ind0[%x %x %x %x %x %x %x] mask=%x/%x common=%u srgb=%u alphatest=%u f=%x ref=%.3f cull=%u/%x front=%x vp(%.0f,%.0f,%.0f,%.0f) origin=%x yctl=%x vpctl=%x\n",
     r[0x4D8],r[0x4D9],r[0x4B9],r[0x4CF],r[0x4D0],r[0x4D1],r[0x4D2],r[0x4D3],r[0x4D4],r[0x4D6],r[0x780],r[0x781],r[0x782],r[0x783],r[0x784],r[0x785],r[0x786],r[0x680],r[0x681],r[0x3E4],r[0x4B8],r[0x4BB],r[0x4C5],ref,r[0x646],r[0x648],r[0x647],vt[0],vt[1],vt[3],vt[4],r[0x4EB],r[0x5E4],r[0x35F]);
-  trace_note("  scissor0 en=%u x=%u..%u y=%u..%u  clipctl=%x stencil func=%x ref=%x mask=%x  vertex attrs:",r[0x380]&1,r[0x381]&0xFFFF,r[0x381]>>16,r[0x382]&0xFFFF,r[0x382]>>16,r[0x44E],r[0x4E4],r[0x4E5],r[0x4E6]);
+  trace_note("  scissor0 en=%u x=%u..%u y=%u..%u  clipctl=%x zbias=%u/%08x/%08x stencil func=%x ref=%x mask=%x  vertex attrs:",r[0x380]&1,r[0x381]&0xFFFF,r[0x381]>>16,r[0x382]&0xFFFF,r[0x382]>>16,r[0x44E],r[0x372],r[0x55B],r[0x56F],r[0x4E4],r[0x4E5],r[0x4E6]);
   for(int a=0;a<8;a++) trace_note(" %x",r[0x458+a]); trace_note("\n");
   tr_shader(vsa,vs,ST_VS); if(fsa) tr_shader(fsa,fs,ST_FS);
   tr_textures(ch,0,vs); if(fsa) tr_textures(ch,4,fs);
@@ -3054,7 +3054,19 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
         if(p_cz){ if(g_zt->f.fmt==GL_DEPTH_STENCIL){ struct { float d; u32 s; } ds={fz,0}; p_cz(g_zt->id,0,GL_DEPTH_STENCIL,GL_FLOAT_32_UNSIGNED_INT_24_8_REV,&ds); }
           else p_cz(g_zt->id,0,GL_DEPTH_COMPONENT,GL_FLOAT,&fz); g_zt->wgen++; } } }
       return; } }
-  if(!g_nrt && !g_zt){ st_nort++; trace_note("DRAW SKIPPED: no target\n"); return; }
+  /* no color and no depth target, but a stage writes storage buffers: the draw is only there for those writes
+     (Jamboree copies board data with vertex shaders that way, 62 and 3 vertices a frame). it runs with the
+     rasterizer off instead of being dropped. SWR_NO_SIDE_DRAWS=1 drops them like before */
+  int side_draw=0;
+  { static int nsd=-1; if(nsd<0) nsd=getenv("SWR_NO_SIDE_DRAWS")!=NULL;
+    if(!g_nrt && !g_zt && !nsd && (vs->si.gbuf_wmask || (gs && gs->si.gbuf_wmask) || fs->si.gbuf_wmask)){ side_draw=1;
+      static int said; if(!said){ said=1; LOG("gpu: draws without targets that write storage buffers run with the rasterizer off (vs %016llx)\n",(unsigned long long)vs->hash); } } }
+  if(!g_nrt && !g_zt && !side_draw){ st_nort++; trace_note("DRAW SKIPPED: no target vs=%016llx fs=%016llx count=%u inst=%u rtctl=%x rt0[%08x %08x %08x %08x fmt %x] zeta en=%x fs writes storage=%x\n",(unsigned long long)vs->hash,(unsigned long long)fs->hash,count,instances,
+      r[0x487],r[0x200],r[0x201],r[0x202],r[0x203],r[0x204],r[0x54E],fs->si.gbuf_wmask);
+    trace_note("  stream out en=%x buf0[%x %x %x %x %x] buf1[%x %x %x %x %x] ctl0[%x %x %x] ctl1[%x %x %x] vs writes storage=%x\n",r[0x1D1],r[0xE0],r[0xE1],r[0xE2],r[0xE3],r[0xE4],r[0xE8],r[0xE9],r[0xEA],r[0xEB],r[0xEC],r[0x1C0],r[0x1C1],r[0x1C2],r[0x1C4],r[0x1C5],r[0x1C6],vs->si.gbuf_wmask);
+    if(g_tr_on && vs->src){ static u64 dumped[16]; static int nd; int k=0; for(;k<nd;k++) if(dumped[k]==vs->hash) break;
+      if(k==nd && nd<16){ dumped[nd++]=vs->hash; char p[160]; snprintf(p,sizeof p,"%s/skipped_vs_%016llx.glsl",g_tr_dir,(unsigned long long)vs->hash); FILE* fo=fopen(p,"w"); if(fo){ fputs(vs->src,fo); fclose(fo); } } }
+    return; }
   st_drawn++; wd_note(vs->hash,fs->hash);
   if(g_draw_asset && g_nrt && g_rt[0] && !g_rt[0]->f.depth && g_rt[0]->w>=256 && g_rt[0]->h>=256 && (u64)g_rt[0]->w*g_rt[0]->h<1920ull*1080){ Tex* c=g_rt[0];
     if(!g_view_rt || g_frame-g_view_frame>300 || (u64)c->w*c->h>=(u64)g_view_rt->w*g_view_rt->h){ if(g_view_rt!=c){ static int said; if(said<6){ said++; LOG("gpu: test view candidate: render target %llx %ux%u\n",(unsigned long long)c->gva,c->w,c->h); } } g_view_rt=c; g_view_frame=g_frame; } }
@@ -3091,7 +3103,7 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
     if(constant || !(va[0]&0x1000)){ VA_OFF(i); if(!va_const[i]){ glVertexAttrib4f(i,0,0,0,1); va_const[i]=1; } continue; }
     u64 start=((u64)va[1]<<32)|va[2]; u64 lim=((u64)r[0x7C0+buf*2]<<32)|r[0x7C1+buf*2]; u32 stride=va[0]&0xFFF;
     u64 len= lim>=start? lim-start+1 : 0; if(len>64u<<20) len=64u<<20;
-    if(!len) { VA_OFF(i); continue; }
+    if(!len) { trace_note("  attr %d: buffer %u at %llx has no length (limit %llx), attribute off\n",i,buf,(unsigned long long)start,(unsigned long long)lim); VA_OFF(i); continue; }
     GLuint vbid=buf_cached(GL_ARRAY_BUFFER,start,len);
     u32 cnt=attr_count(size), bits=attr_bits(size);
     GLenum gt; GLboolean norm= ty==1||ty==2;
@@ -3120,6 +3132,7 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
     float vt[2]; memcpy(vt,&r[0x280],8); float fl[4]={ (vt[1]<0)!=(origin_flip_h(r)!=0)? -1.f : 1.f, p_clip? 0.f : (float)(r[0x35F]&1), (float)L_, 0 };
     glProgramUniform4fv(vpp,vpl,1,fl); vs->lu_ok=0; g_fb_sig_ok=0;
     if(atl>=0){ float a4[4]; memcpy(a4,g_last_at,16); a4[3]=(float)L_; glProgramUniform4fv(atp,atl,1,a4); fs->lu_ok=0; } }
+  if(side_draw && L_==0){ glBindFramebuffer(GL_FRAMEBUFFER,0); g_fb_sig_ok=0; glEnable(0x8C89 /* GL_RASTERIZER_DISCARD */); }
   GLenum mode=topo(topology);
   if(topology==7 || topology==8 || topology==9){ mode=GL_TRIANGLE_FAN; if(topology==7) mode=GL_TRIANGLES; if(topology==8) mode=GL_TRIANGLE_STRIP; }   /* quad strip = tri strip */
   if(mesh_ni){ glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,g_mesh_buf[2]); glDrawElementsInstancedBaseVertexBaseInstance(GL_TRIANGLES,mesh_ni,GL_UNSIGNED_INT,(void*)0,1,0,0); }
@@ -3147,6 +3160,7 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
   }
   if(fs_imgs) glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT|GL_SHADER_IMAGE_ACCESS_BARRIER_BIT|GL_FRAMEBUFFER_BARRIER_BIT);   /* later draws read what SUST wrote */
   }
+  if(side_draw){ glDisable(0x8C89); glBindFramebuffer(GL_FRAMEBUFFER,g_fbo); g_fb_sig_ok=0; }
   gbuf_writeback();
   /* SWR_DRAW_SYNC=1 (with SWR_NO_GLQ=1): finish every draw and log the slow ones, to find a draw that hangs the gpu */
   { static int ds=-1; if(ds<0) ds= getenv("SWR_DRAW_SYNC")? 1 : 0;
