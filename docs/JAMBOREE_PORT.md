@@ -23,10 +23,10 @@ The runtime source in `runtime/` is patched here; every change is in git (`git l
 | Save dates | **fixed** (bug 6): parties were dated 12/31/1969 |
 | Mode list backdrop | not reproduced: the gray panel seen there is the game's own Offline Data dialog |
 | Reading the user's dump in place | works (`game_dump=`), nothing copied |
-| Dialog boxes, text bubbles, dice counters | **fixed** (bug 7): they were clipped away. Coin change popups use the same UI path; not seen on screen yet |
+| Dialog boxes, text bubbles, dice counters | **fixed** (bug 7): they were clipped away. Coin change popups ("-5" when buying at the shop) show too |
 | Characters missing (Mario in character select and on the board) | **fixed** with bug 7: all previews render |
 | Title movie / attract cutscene choppy | **fixed** (bug 8): the video texture now updates every decoded picture |
-| Board spaces | **partly fixed** (bug 9): the space under the current player shows; the rest of the path's spaces still don't |
+| Board spaces | **fixed** (bugs 9 and 10): the spaces along the paths show, near and far |
 | Input | keyboard via window messages, XInput controllers (by label: A confirms; `pad_buttons=1` for Switch positions) |
 | Audio | audren mixer runs (DSP-ADPCM voices, BFSTM streams); not checked by ear |
 
@@ -133,7 +133,7 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
   over it is checked again on its next use. A 7 s recording of the cutscene went from 224 to 288 distinct frames,
   and the gaps of 3-4 frames between pictures are gone.
 
-### Bug 9: board spaces missing (partly fixed)
+### Bug 9: board spaces missing, part 1 (target-less draws)
 - Each board frame starts with two draws that have no color or depth target and no fragment shader: vertex shaders
   (`9fe02e952fb8622e`, 62 vertices; `3247054149f32e6f`, 3 vertices) that write storage buffers (an `atomicAdd`
   counter, then 0xB4 bytes of arguments the next GPFIFO entry feeds to a draw macro). The runtime dropped every
@@ -144,8 +144,24 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 - Result: the space under the current player and some nearby ones render; most of the path's spaces still don't.
   Ruled out: depth bias (no draw uses it), EQUAL-after-prepass depth mismatch (forcing LEQUAL changed nothing), the
   buffer caches (`SWR_VB_FULLCHECK=1`, `SWR_NO_SSBO_CACHE=1`), zero-length vertex streams, occlusion queries (the
-  runtime always reports visible). Next: find the space draws in a trace (the target-less pass's 62 vertices match the
-  board's object count) and follow the argument buffer at `532b7d200` to the draw macro that reads it.
+  runtime always reports visible). The rest was bug 10.
+
+### Bug 10: most board spaces missing (flow instructions ignored their condition codes)
+- Evidence: the target-less pass `9fe02e952fb8622e` is GPU culling, one vertex per board object (80 byte records):
+  frustum test, then a distance bucket 0..2, an `atomicAdd` on that bucket's counter (`532b7d100`, 3 words) and the
+  record copied into a per-bucket instance list (`53351b700`, 128 slots per bucket). `3247054149f32e6f` then copies
+  the counters into 9 indirect draw commands at `532b7d200` (3 meshes x 3 buckets, `count, instances, first, base
+  vertex, base instance`); the draw macro reads them and the space shaders (e.g. `b5973422978f2692`) take their
+  matrix from slot `gl_InstanceID + base instance` (NVN keeps the base instance in `c0[0x644]`). In a trace the
+  counters were `(0, 2, 42)` but every bucket 2 command had 0 instances: most spaces were in bucket 2.
+- Cause: the copy loop ends with `ISET.CC RZ, R0 >= N` then `@!P0 EXIT CC.NE` (exit only when all N are done). The
+  translator ignored the condition code test of flow instructions and the `.CC` of `ISET`, so the EXIT always ran and
+  the last bucket's count was never written. Found with `_work/sdis.py` (a listing from the translator's opcode table).
+- Fix (`shader.c`): BRA/EXIT/BRK/CONT/SYNC/KIL/RET test their condition code (`cc_test_expr`, the same flow-test
+  table yuzu uses, overflow taken as clear); a flow instruction with a test no longer counts as unconditional (stack
+  resolution, dead code, structured if/else); `ISET.CC` and `FSET.CC` set the Z and S flags. Translated shaders are
+  cached by their GLSL, so the old ones are rebuilt by themselves.
+- Result: the spaces along the paths render, near and far, at 60 FPS.
 
 ### Recompiling with the hints file: slower, not adopted
 - Rebuilding `Recomp_code.dll` with `Recomp.hints` (109 addresses) took the board from 60 to ~42 FPS with the GPU
@@ -192,6 +208,8 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 | `SWR_NO_SIDE_DRAWS=1` | drop draws without targets even when they write storage buffers (pre-bug-9) |
 | `SWR_NO_ENTRY_FLUSH=1` | don't flush a held-back draw before reading a GPFIFO entry (pre-bug-9) |
 | `SWR_VB_FULLCHECK=1` | hash every cached vertex/index/storage buffer on every use (finds stale buffer bugs) |
+| `SWR_ZALWAYS_FS=<hash>` | draws with that fragment shader skip the depth test (tells a draw lost to depth from one with no pixels) |
+| `_work/sdis.py <sh_*.bin>` | rough listing of a dumped shader (word index = `case N` in the GLSL, guards, CC tests) |
 | (F5 trace) | each draw also lists scissor, clip control, depth bias, stencil function, vertex attribute formats; a skipped target-less draw lists its targets, stream-out state and storage writes and dumps its vertex shader |
 
 Tools in `_work/`: `run.ps1` (launch, screenshots through the runtime's F8 capture, keys posted to the focused game
@@ -254,11 +272,12 @@ Note: the minigames and boards are NROs in `romfs/nro/NX_Release/`. The recompil
 (`nxloader.romfs_nros`), so the romfs NROs are part of the code build input as well.
 
 ## 7. Next steps
-1. Board spaces (bug 9): most are still missing.
+1. Board: a waiting player (Mario, on a space further down the path) looked see-through. Check whether that's the
+   game's own fade or a rendering bug.
 2. Plaza overview: the paving around the fountain looks noisy from far away (reported; likely the texture's lower
    mips, ASTC decoded to BC3 on GPUs without ASTC). Not reproduced yet: needs the first-visit plaza tour.
 3. Character select: switching characters quickly stutters (new models and shaders load on demand).
 4. More minigames and the other boards; a full 10-turn party to the results.
 5. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
 6. Why the hints rebuild is slower (see above) before using it; audio by ear, performance on long sessions.
-6. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.
+7. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.
