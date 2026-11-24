@@ -54,3 +54,5 @@ int g_opt_frame_skip;   /* fps_target, only used by the GL renderer */
 
 void gpu_crash_note(void){}
 int g_opt_show_rt;   /* show_rt: no render targets to show without a renderer */
+
+void gpu_note_ext_write(const void* p, u64 len){ (void)p;(void)len; }

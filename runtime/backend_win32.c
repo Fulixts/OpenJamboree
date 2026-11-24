@@ -17,6 +17,7 @@ static int g_seconds=0; static char g_shot[1024]; static u64 g_start; static vol
 static char g_script[8192];
 static HANDLE g_ready;
 static volatile LONG g_mouse_mode, g_mouse_invert, g_mouse_dx, g_mouse_dy;
+static int g_pad_by_position;   /* pad_buttons=1: Switch positions (xbox B = A); 0: by label (xbox A = A) */
 static volatile LONG g_mouse_sensitivity=100; /* F1 scale, curved: 10% = 5x, 500% = 1250x */
 static int g_controls_open;
 static u64 g_mouse_time;
@@ -44,6 +45,7 @@ void backend_ini(const char* k, const char* v){
     double n=atof(v); if(!(n>0)) n=1; if(n<.1) n=.1; if(n>5) n=5; g_mouse_sensitivity=(LONG)(n*100+.5);
   }
   else if(!strcmp(k,"mouse_invert")) g_mouse_invert=atoi(v)&3;
+  else if(!strcmp(k,"pad_buttons")) g_pad_by_position=atoi(v)==1;
   else if(!strcmp(k,"script")) strncpy(g_script,v,8191);
   else if(!strcmp(k,"renderer")){   /* opengl (default), vulkan (the NVN layer, runtime/nvn) or eden (edenvk.h) */
     { static int set_nvn; int nv= !strcmp(v,"vulkan");
@@ -393,8 +395,10 @@ void video_poll(void){
   }
   if(xget && focused){
     for(DWORD i=0;i<4;i++){ XST s; if(xget(i,&s)) continue; XGP* g=&s.Gamepad; WORD x=g->wButtons;
-      /* map by position like a Switch pad: A right (xbox B), B bottom (xbox A), X top, Y left */
-      if(x&0x2000) b|=1<<0; if(x&0x1000) b|=1<<1; if(x&0x8000) b|=1<<2; if(x&0x4000) b|=1<<3;
+      /* by label (default): xbox A = A (confirm), B = B, X = X, Y = Y. pad_buttons=1 maps by position like a Switch
+         pad instead: A right (xbox B), B bottom (xbox A), X top (xbox Y), Y left (xbox X) */
+      if(g_pad_by_position){ if(x&0x2000) b|=1<<0; if(x&0x1000) b|=1<<1; if(x&0x8000) b|=1<<2; if(x&0x4000) b|=1<<3; }
+      else { if(x&0x1000) b|=1<<0; if(x&0x2000) b|=1<<1; if(x&0x4000) b|=1<<2; if(x&0x8000) b|=1<<3; }
       if(x&0x0040) b|=1<<4; if(x&0x0080) b|=1<<5; if(x&0x0100) b|=1<<6; if(x&0x0200) b|=1<<7;
       if(g->bLeftTrigger>60) b|=1<<8; if(g->bRightTrigger>60) b|=1<<9;
       if(x&0x0010) b|=1<<10; if(x&0x0020) b|=1<<11;

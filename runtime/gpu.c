@@ -191,6 +191,7 @@ void i2m_data(GpuChannel* ch, u32 v){
 
 /* ============================================================ dispatch */
 extern void r3d_pending_flush(void); extern int r3d_pending_on(void);
+static int entry_flush(void){ static int v=-1; if(v<0) v=getenv("SWR_NO_ENTRY_FLUSH")==NULL; return v; }   /* SWR_NO_ENTRY_FLUSH=1: no flush before a GPFIFO entry */
 
 u64 g_meth_n;   /* methods processed (performance.txt) */
 int g_edenvk_want;   /* renderer=vulkan in the .ini (edenvk.h) */
@@ -266,6 +267,7 @@ void gpu_submit_now(u64* e, u32 n, u32 channel){
   for(u32 k=0;k<n;k++){
     u64 ent=e[k]; u64 va=ent&0xFFFFFFFFFCull; u32 words=(u32)((ent>>42)&0x1FFFFF);
     if(!words) continue;
+    if(r3d_pending_on() && entry_flush()) r3d_pending_flush();   /* see chan_pump */
     u32* buf=(u32*)gmem_ptr(va,(u64)words*4);
     if(buf) run_pushbuffer(ch,buf,words);
     else { u32* tmp=malloc((u64)words*4); gmem_read(va,tmp,(u64)words*4); run_pushbuffer(ch,tmp,words); free(tmp); }
@@ -303,6 +305,10 @@ static int chan_pump(GpuChannel* ch){
     for(; s->k<s->n; s->k++, s->i=0){
       u64 ent=s->ent[s->k]; u64 va=ent&0xFFFFFFFFFCull; u32 words=(u32)((ent>>42)&0x1FFFFF);
       if(!words || s->i>=words) continue;
+      /* the entry may be data a draw still held back for instance merging writes (Jamboree's board culling writes the
+         indirect draw arguments with a vertex shader, and the next entry feeds them to the draw macro): run that draw
+         first, so reading the entry waits for its results */
+      if(r3d_pending_on() && entry_flush()) r3d_pending_flush();
       u32* buf=(u32*)gmem_ptr(va,(u64)words*4); u32 used;
       t_defer=1;
       if(buf) used=run_pushbuffer(ch,buf+s->i,words-s->i);

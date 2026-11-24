@@ -238,6 +238,7 @@ u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log
 static u8 clamp8(int v){ return v<0? 0 : v>255? 255 : (u8)v; }
 
 static void vic_put(u8* base, u64 off, const u8* src, u32 n, u64 lim){ if(off+n<=lim) memcpy(base+off,src,n); }
+void gpu_note_ext_write(const void* p, u64 len);   /* textures over a VIC output are checked again on their next use */
 
 static void vic_execute(u32* r){
   if(!g_vframes) return;
@@ -271,6 +272,7 @@ static void vic_execute(u32* r){
         o[ri]=clamp8((c+409*e+128)>>8); o[1]=clamp8((c-100*d-208*e+128)>>8); o[bi]=clamp8((c+516*d+128)>>8); o[3]=255; }
       if(!blk) vic_put(py,(u64)y*pitch,row,w*4,lim);
       else for(u32 xb=0;xb<w*4;xb+=16){ u32 n=w*4-xb<16? w*4-xb : 16; vic_put(py,bl_offset(xb,y,0,pitch,sh,bh,0),row+xb,n,lim); } }
+    gpu_note_ext_write(py,lim);
     { static int said; if(said<2){ said++; LOG("video: VIC wrote a %ux%u RGBA picture at iova %llx\n",w,h,(unsigned long long)ly); } }
     return; }
   /* NV12. pitch linear rows are 256 aligned */
@@ -285,6 +287,7 @@ static void vic_execute(u32* r){
   if(pc) for(u32 y=0;y<h/2;y++){ const u8* s=fuv+(u64)y*fw;
     if(!blk) vic_put(pc,(u64)y*pitch,s,w,clim);
     else for(u32 x=0;x<w;x+=16){ u32 n=w-x<16? w-x : 16; vic_put(pc,bl_offset(x,y,0,pitch,(sh+1)/2,bh,0),s+x,n,clim); } }
+  gpu_note_ext_write(py,ylim); if(pc) gpu_note_ext_write(pc,clim);
   { static int said; if(said<2){ said++; LOG("video: VIC wrote a %ux%u NV12 picture (luma iova %llx, chroma %llx, pitch %u)\n",w,h,(unsigned long long)ly,(unsigned long long)lc,pitch); } } }
 
 /* ------------------------------------------------------------ host1x command stream */
