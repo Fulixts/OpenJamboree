@@ -1,0 +1,114 @@
+# OpenJamboree: nothing from Nintendo, nothing made from the game, no secrets, no local tool downloads.
+# Everything the game needs is read from the user's own dump at build or run time.
+
+# ---- game data and anything built or captured from it ----
+# recompiled game: <Game>.exe, <Game>_code.dll, <Game>_data/ (dump copy, saves), shader cache, logs
+games/
+*_code.dll
+# the game's code translated to C
+*_build/
+*_data/
+exefs/
+romfs/
+control/
+control*.nacp
+save/
+saves/
+shader_cache/
+captures/
+recordings/
+screenshots/
+# addresses inside the game's code
+*.hints
+threads.txt
+shader_*.glsl
+*.log
+*.log.*
+
+# Switch formats (dumps, containers, assets, executables, keys, firmware)
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.ncz
+*.nso
+*.nro
+*.nrr
+*.npdm
+*.nacp
+*.bea
+*.bfstm
+*.bfwav
+*.bfres
+*.bntx
+*.szs
+*.sarc
+*.byml
+*.msbt
+*.mp4
+*.keys
+prod.keys
+title.keys
+dev.keys
+firmware/
+nand/
+sdmc/
+system/
+
+# ---- secrets ----
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*token*
+*secret*
+*credential*
+.netrc
+.git-credentials
+gh_hosts.yml
+
+# ---- local tools and build output (downloaded or built on the user's PC) ----
+gcc/
+python/
+tcc/
+__pycache__/
+*.pyc
+*.exe
+*.dll
+*.o
+*.obj
+*.lib
+*.pdb
+tool/pylib/
+Lossless.dll
+
+# ---- per-user settings (the tracked SwitchRecomp.ini is the template) ----
+*.ini
+!SwitchRecomp.ini
+
+# ---- dev scratch: logs, dumps, screenshots, symbol caches made from the game ----
+_work/*
+!_work/*.py
+!_work/*.ps1
+!_work/*.sh
+!_work/*.c
+_work/*.orig
+
+# ---- images and media (screenshots of the game) ----
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+!tool/**/*.png
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
