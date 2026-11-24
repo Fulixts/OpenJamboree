@@ -212,6 +212,7 @@ typedef struct Tex {
   u64* seen; u32 nseen;   /* assembled textures: which RT (and write count) each layer/level was copied from */
   struct RtHist* hist; u32 nhist;   /* last draws into this RT (small RTs only), for F5 traces */
   u32 huge_w, huge_h;   /* a texture too big for the host: the size the game gave it */
+  u32 extw;   /* g_extw_gen when the video engine writes were last compared with this texture */
   u32 skip; u64* lhash; u8* lmask; u32 vt_next;   /* virtual textures: top mips left out, per layer hash, layers to upload */
   struct Tex* next;
 } Tex;
@@ -223,6 +224,23 @@ extern u32 g_submit_epoch;
    of its last full check */
 static void tex_ww_note(Tex* t){ u8* p= t->size? gmem_ptr(t->gva,t->size) : NULL; t->wcpu= p? (u64)(p-g_mem) : 0; t->wchk=g_submit_epoch;
   t->wsig=0; if(!p && t->size && g_ww>0){ int d; t->wsig=ww_pages(t->gva,t->size,~0u,&d); } }
+/* memory written on the CPU by the video engines (VIC output pictures): a texture over it is checked again on its next
+   use instead of waiting for its change-check schedule (every 4-20 frames). Jamboree's title movie and menu backgrounds
+   showed only every ~6th decoded picture (about 10 FPS) */
+#define EXTW_N 16
+static volatile u32 g_extw_gen; static u64 g_extw_lo[EXTW_N], g_extw_hi[EXTW_N]; static u32 g_extw_g[EXTW_N];
+void gpu_note_ext_write(const void* p, u64 len){
+  if(!p || !len || (const u8*)p<g_mem) return;
+  u64 lo=(u64)((const u8*)p-g_mem), hi=lo+len; u32 g=g_extw_gen+1; int k=0, old=0;
+  for(;k<EXTW_N;k++){ if(g_extw_lo[k]==lo) break; if((i32)(g_extw_g[k]-g_extw_g[old])<0) old=k; }
+  if(k==EXTW_N) k=old;
+  g_extw_lo[k]=lo; g_extw_hi[k]=hi; g_extw_g[k]=g; g_extw_gen=g; }
+u64 gmmu_translate(u64);
+static int tex_ext_written(Tex* t){
+  u32 seen=t->extw, now=g_extw_gen; if(seen==now) return 0; t->extw=now;
+  u64 lo= t->wcpu? t->wcpu : gmmu_translate(t->gva); if(!lo || !t->size) return 0; u64 hi=lo+t->size;
+  for(int k=0;k<EXTW_N;k++) if((i32)(g_extw_g[k]-seen)>0 && g_extw_lo[k]<hi && lo<g_extw_hi[k]) return 1;
+  return 0; }
 
 /* the real scale is per texture, not for the whole GPU */
 static float TS(const Tex* t){ return t->is_rt? t->scale : 1.0f; }
@@ -932,6 +950,8 @@ static Tex* tex_from_tic_(u32* tic){
     if(t->gva==gva && ((t->w==w && t->h==h) || (t->huge_w==w && t->huge_h==h)) && t->d==d && t->fkey==fkey && t->target==target && !t->is_rt){
       t->last_used=g_frame;
       if(t->skip){ if((i32)(g_frame-t->vt_next)>=0) vt_refresh(t,0); return t; }
+      if(g_extw_gen!=t->extw && tex_ext_written(t)){ t->stable=0; t->next_check=g_frame; t->frame_checked=g_frame-1;
+        static u32 n; if(++n%600==1) LOG("video: %u texture refreshes after video engine writes (frame %u)\n",n,(u32)g_frame); }
       /* change check: often at first, then less while the texture stays the same, capped in MB per frame */
       if(t->frame_checked!=g_frame && (i32)(g_frame-t->next_check)>=0){
         /* write tracking (Windows): nothing wrote the texture's memory since its last full check (not the game, not
@@ -1930,11 +1950,12 @@ static u32 origin_scissor_y(u32 ys, u32 oh){
   u32 y0=ys&0xFFFF, y1=ys>>16; if(y1>oh) y1=oh; if(y0>y1) y0=y1;
   return (oh-y1) | ((oh-y0)<<16); }
 
+static int g_depth_clamp=-1;
 static void apply_state(GpuChannel* ch){
   u32* r=ch->r3d;
   { u32 sig[256]; int n=0;
 #define SR(a,b) for(u32 q_=(a);q_<=(b);q_++) sig[n++]=r[q_];
-    SR(0x280,0x285) SR(0x300,0x303) SR(0x35F,0x35F) SR(0x36B,0x36B) SR(0x372,0x372) SR(0x380,0x382) SR(0x3D5,0x3D7) SR(0x3E4,0x3E4)
+    SR(0x280,0x285) SR(0x300,0x303) SR(0x35F,0x35F) SR(0x44E,0x44E) SR(0x36B,0x36B) SR(0x372,0x372) SR(0x380,0x382) SR(0x3D5,0x3D7) SR(0x3E4,0x3E4)
     SR(0x4B3,0x4B3) SR(0x4B8,0x4BA) SR(0x4C3,0x4C3) SR(0x4C7,0x4CA) SR(0x4D0,0x4DF) SR(0x4E0,0x4E7) SR(0x4ED,0x4ED) SR(0x546,0x546)
     SR(0x55B,0x55B) SR(0x565,0x569) SR(0x56F,0x56F) SR(0x591,0x592) SR(0x646,0x648) SR(0x680,0x687) SR(0x780,0x7BF) SR(0x4EB,0x4EB)
 #undef SR
@@ -1942,6 +1963,13 @@ static void apply_state(GpuChannel* ch){
     if(g_state_ok && !memcmp(sig,g_state_sig,(size_t)n*4)){ st_state_skip++; return; }
     memcpy(g_state_sig,sig,(size_t)n*4); g_state_ok=1; }
   if(p_clip){ int m=r[0x35F]&1; if(m!=g_clip_mode){ p_clip(0x8CA1 /* LOWER_LEFT */, m? 0x935F /* ZERO_TO_ONE */ : 0x935E /* NEGATIVE_ONE_TO_ONE */); g_clip_mode=m; } }
+  /* SET_VIEWPORT_CLIP_CONTROL (0x44E), GEOMETRY_CLIP in bits 11-13: only PASSTHRU (1), FRUSTUM_XYZ_CLIP (3) and
+     FRUSTUM_Z_CLIP (5) clip against near/far; the others, 0 (WZERO_CLIP, the reset value) included, clamp depth instead
+     (yuzu: depth_clamp_disabled). Jamboree draws its dialog boxes, text and popups at clip z -0.003 in zero-to-one
+     mode: with GL clipping they were cut away entirely. SWR_NO_DEPTH_CLAMP=1 restores the old behaviour */
+  { static int off=-1; if(off<0) off=getenv("SWR_NO_DEPTH_CLAMP")!=NULL;
+    u32 gcl=(r[0x44E]>>11)&7; int clamp= !off && !(gcl==1 || gcl==3 || gcl==5);
+    if(clamp!=g_depth_clamp){ if(clamp) glEnable(0x864F /* GL_DEPTH_CLAMP */); else glDisable(0x864F); g_depth_clamp=clamp; } }
   /* grouped so only what changed hits GL */
   static u32 gs[16][20]; int ok=g_gs_ok; g_gs_ok=1;
 #define GRP(id_, ...) u32 k_##id_[]={__VA_ARGS__}; if(!ok || memcmp(gs[id_],k_##id_,sizeof k_##id_)) if(memcpy(gs[id_],k_##id_,sizeof k_##id_))
@@ -2518,6 +2546,8 @@ static GLuint buf_cached(GLenum target, u64 start, u64 len){
   u32 k=(u32)((start>>6)^(start>>20)^len)&2047;
   VbC* e=vbc[k]; for(;e;e=e->next) if(e->start==start && e->len==len) break;
   if(e && e->csseen!=g_csgen){ if(cs_blk_dirty(start,len,e->csseen)){ e->epoch=0; e->chk_epoch=g_submit_epoch-100000u; e->stable=0; } e->csseen=g_csgen; }   /* written by a compute, reread */
+  { static int full=-1; if(full<0) full=getenv("SWR_VB_FULLCHECK")!=NULL;   /* diagnostics: hash every buffer on every use */
+    if(full && e){ e->epoch=g_submit_epoch-1; e->chk_epoch=g_submit_epoch-100000u; e->stable=0; } }
   if(e && e->epoch!=g_submit_epoch && e->used<0xFFFFFFFFu) e->used++;   /* submits it was used in: 1 = a one-off range */
   if(e && e->epoch==g_submit_epoch){ glBindBuffer(target,e->id); return e->id; }
   /* nobody touched it since last time (still checked again every 240 submits) */
@@ -2718,6 +2748,8 @@ static void tr_draw(GpuChannel* ch, Sh* vs, Sh* fs, u64 vsa, u64 fsa, int indexe
     trace_note("  z %llx %ux%u fmt=%x test=%u func=%x write=%u stencil=%u zscale=%.9g ztrans=%.9g range=%.9g..%.9g mode=%u\n",(unsigned long long)g_zt->gva,g_zt->w,g_zt->h,g_zt->fkey,r[0x4B3],r[0x4C3],r[0x4BA],r[0x4E0],vt[2],vt[5],dn,df,r[0x35F]&1); }
   trace_note("  blend en=%u,%u indep=%u common[sep=%u eq=%x src=%x dst=%x eqa=%x srca=%x dsta=%x] ind0[%x %x %x %x %x %x %x] mask=%x/%x common=%u srgb=%u alphatest=%u f=%x ref=%.3f cull=%u/%x front=%x vp(%.0f,%.0f,%.0f,%.0f) origin=%x yctl=%x vpctl=%x\n",
     r[0x4D8],r[0x4D9],r[0x4B9],r[0x4CF],r[0x4D0],r[0x4D1],r[0x4D2],r[0x4D3],r[0x4D4],r[0x4D6],r[0x780],r[0x781],r[0x782],r[0x783],r[0x784],r[0x785],r[0x786],r[0x680],r[0x681],r[0x3E4],r[0x4B8],r[0x4BB],r[0x4C5],ref,r[0x646],r[0x648],r[0x647],vt[0],vt[1],vt[3],vt[4],r[0x4EB],r[0x5E4],r[0x35F]);
+  trace_note("  scissor0 en=%u x=%u..%u y=%u..%u  clipctl=%x stencil func=%x ref=%x mask=%x  vertex attrs:",r[0x380]&1,r[0x381]&0xFFFF,r[0x381]>>16,r[0x382]&0xFFFF,r[0x382]>>16,r[0x44E],r[0x4E4],r[0x4E5],r[0x4E6]);
+  for(int a=0;a<8;a++) trace_note(" %x",r[0x458+a]); trace_note("\n");
   tr_shader(vsa,vs,ST_VS); if(fsa) tr_shader(fsa,fs,ST_FS);
   tr_textures(ch,0,vs); if(fsa) tr_textures(ch,4,fs);
   if(count<=6){ /* fullscreen passes (tonemap, fog, lighting): dump their constants */
