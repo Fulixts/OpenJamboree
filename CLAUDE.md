@@ -12,7 +12,10 @@ Public repo: https://github.com/drewkellar/OpenJamboree (remote name `github`). 
 - **Always push finished work.** When a change is done and verified, commit it, push the feature branch to `github`
   and open a pull request against `main` (`gh pr create --base main`) for the owner's manual review. Report the PR link.
   Don't leave finished work only on the local machine.
-- A local `pre-push` hook (`.git/hooks/pre-push`) rejects pushes to `main`. Don't bypass it, and never set
+- GitHub branch protection on `main`: changes only through a pull request, applies to admins too, no force pushes,
+  no deletion, review conversations must be resolved. Don't change these settings unless the owner asks. Even an
+  owner-approved change to main goes in through its PR (`gh pr merge` only after the owner says to merge).
+- A local `pre-push` hook (`.git/hooks/pre-push`) also rejects pushes to `main`. Don't bypass it, and never set
   `ALLOW_MAIN_PUSH=1` unless the owner explicitly approved that push.
 - One topic per branch/PR. Further fixes for the same PR go on the same branch.
 - Commit messages: what changed and why; end with the co-author line the session asks for.
