@@ -20,6 +20,7 @@ static volatile LONG g_mouse_mode, g_mouse_invert, g_mouse_dx, g_mouse_dy;
 static int g_pad_by_position;   /* pad_buttons=1: Switch positions (xbox B = A); 0: by label (xbox A = A) */
 static volatile LONG g_mouse_sensitivity=100; /* F1 scale, curved: 10% = 5x, 500% = 1250x */
 static int g_controls_open;
+int g_background;   /* SWR_BACKGROUND=1: tests run off-screen without taking focus (win_thread); audio.c mutes */
 static u64 g_mouse_time;
 static i32 g_mouse_rx, g_mouse_ry;
 static void mouse_capture(void){
@@ -316,14 +317,22 @@ static void win_thread(void* arg){ (void)arg;
   wc.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH); wc.lpszClassName="SwitchRecompWnd";
   RegisterClassA(&wc);
   RECT r={0,0,1280,720}; AdjustWindowRect(&r,WS_OVERLAPPEDWINDOW,FALSE);
-  g_hwnd=CreateWindowA("SwitchRecompWnd",g_title,WS_OVERLAPPEDWINDOW|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,r.right-r.left,r.bottom-r.top,NULL,NULL,hi,NULL);
+  if(g_background){
+    /* SWR_BACKGROUND=1 (automated tests): a shown window placed past the right edge of all monitors, never
+       activated, no taskbar or Alt+Tab entry. it still renders and takes posted keys, and F8 captures read the
+       game's own image, so tests work while someone uses the PC */
+    int x=GetSystemMetrics(SM_XVIRTUALSCREEN)+GetSystemMetrics(SM_CXVIRTUALSCREEN)+200, y=GetSystemMetrics(SM_YVIRTUALSCREEN);
+    g_hwnd=CreateWindowExA(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,"SwitchRecompWnd",g_title,WS_OVERLAPPEDWINDOW,x,y,r.right-r.left,r.bottom-r.top,NULL,NULL,hi,NULL);
+    ShowWindow(g_hwnd,SW_SHOWNOACTIVATE); ShowWindow(g_hwnd,SW_SHOWNOACTIVATE);   /* the first call can be swallowed by the launcher's show mode */
+    SetWindowPos(g_hwnd,HWND_BOTTOM,x,y,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
+    LOG("window: background mode (off-screen at %d,%d, no focus, no sound, pad and keyboard ignored)\n",x,y); }
+  else g_hwnd=CreateWindowA("SwitchRecompWnd",g_title,WS_OVERLAPPEDWINDOW|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,r.right-r.left,r.bottom-r.top,NULL,NULL,hi,NULL);
   RAWINPUTDEVICE rid={1,2,0,g_hwnd}; RegisterRawInputDevices(&rid,1,sizeof rid);
   g_hdc=GetDC(g_hwnd);
   PIXELFORMATDESCRIPTOR pfd={sizeof pfd,1,PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER,PFD_TYPE_RGBA,32};
   pfd.cDepthBits=24; pfd.cStencilBits=8; pfd.iLayerType=PFD_MAIN_PLANE;
   SetPixelFormat(g_hdc,ChoosePixelFormat(g_hdc,&pfd),&pfd);
-  if(g_want_fs) set_fullscreen(1);
-  ls_launch(); mouse_capture();
+  if(!g_background){ if(g_want_fs) set_fullscreen(1); ls_launch(); mouse_capture(); }
   SetEvent(g_ready);
   MSG msg; while(GetMessageA(&msg,NULL,0,0)>0){ TranslateMessage(&msg); DispatchMessageA(&msg); }
   g_quit=1;
@@ -331,6 +340,7 @@ static void win_thread(void* arg){ (void)arg;
 
 void video_init(const char* title){
   snprintf(g_title,sizeof g_title,"%s - SwitchRecomp  (F1 help)",title);
+  { const char* e=getenv("SWR_BACKGROUND"); g_background= e && *e=='1'; }
   xinput_load(); timeBeginPeriod(1);
   g_ready=CreateEventA(NULL,TRUE,FALSE,NULL);
   _beginthread(win_thread,1<<20,NULL);
@@ -382,7 +392,8 @@ void video_poll(void){
   int focused=GetForegroundWindow()==g_hwnd && !g_controls_open;
   /* SWR_INPUT_UNFOCUSED=1 (automated tests): keys posted to the window count even when it isn't in front, since
      Windows won't let a background script bring it forward while someone uses another window */
-  static int unfocused_input=-1; if(unfocused_input<0){ const char* e=getenv("SWR_INPUT_UNFOCUSED"); unfocused_input= e && *e=='1'; }
+  static int unfocused_input=-1; if(unfocused_input<0){ const char* e=getenv("SWR_INPUT_UNFOCUSED"); unfocused_input= (e && *e=='1') || g_background; }
+  if(g_background) focused=0;   /* the real pad and mouse belong to whoever is using the PC; only posted keys count */
   u64 k=(focused || (unfocused_input && !g_controls_open))?keys_held:0, b=k&0xFFFFull;
   i32 lx=axis(k,40,42), ly=axis(k,43,41), rx=axis(k,44,46), ry=axis(k,47,45);
   if(g_mouse_mode){

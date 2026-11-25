@@ -251,13 +251,15 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 | `SWR_PROBE_FS=<fs>[,<rt addr>]` | after each draw with that fragment shader, log the average colour of its target (and of the given RT) |
 | `SWR_WATCH_RT=<w>x<h>` | log what happens to RTs of that size: created, parked, revived, cleared (with the clear's registers), dropped, freed; `SWR_WATCH_RT_TRACE=1` traces the frame after a second clear in one frame |
 | `SWR_NO_ICON_SWAP=1` | keep the game's button icon sheets as they are (bug 11) |
+| `SWR_BACKGROUND=1` | background test mode: the window sits past the right edge of all monitors, is never activated, has no taskbar or Alt+Tab entry; sound is silenced (still sent to the device so audio timing is unchanged); the real pad, mouse and keyboard are ignored, only posted keys count. F8 captures and logs work as usual. `run.ps1` sets it unless `-Foreground` |
+| `SWR_MUTE=1` | silence only, everything else as normal |
 | `SWR_KEEP_DRAWN_FS=<fs>` / `0` | which copy shader protects its RT from a clear later in the frame (bug 12); 0 = off |
 | `_work/sdis.py <sh_*.bin>` | rough listing of a dumped shader (word index = `case N` in the GLSL, guards, CC tests) |
 | (F5 trace) | each draw also lists scissor, clip control, depth bias, stencil function, vertex attribute formats; a skipped target-less draw lists its targets, stream-out state and storage writes and dumps its vertex shader |
 
-Tools in `_work/`: `run.ps1` (launch, screenshots through the runtime's F8 capture, keys posted to the focused game
-window with `Q+E` chords and `vk@ms` holds, kill; it sets `SWR_INPUT_UNFOCUSED=1` because Windows often refuses to
-bring the game window forward from a background script, and a desktop capture of the GL window comes out black), `fn.sh` (print the generated C of one function), `dynsym.py`
+Tools in `_work/`: `run.ps1` (launch, screenshots through the runtime's F8 capture, keys posted to the game
+window with `Q+E` chords and `vk@ms` holds, kill; it sets `SWR_INPUT_UNFOCUSED=1`, and a desktop capture of the GL
+window comes out black; runs in background mode unless `-Foreground` is given), `fn.sh` (print the generated C of one function), `dynsym.py`
 (symbolize `SWR_TRACE_DYN` output), `build.py`
 (rebuild the runtime, ~30 s), `stackdump.c` + `resolve.py` (every host thread's stack, symbolized), `glcompile.c`
 (compile one GLSL file on the real driver and time it), `syms.py` (search the dump's symbol tables), `thr.py`

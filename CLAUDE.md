@@ -41,5 +41,8 @@ Public repo: https://github.com/drewkellar/OpenJamboree (remote name `github`). 
 
 - Rebuild the runtime: `python/python.exe _work/build.py` (about 30 s) → copy `_work/runtime_test.exe` to `games/Recomp.exe`.
 - Run and screenshot: `_work/run.ps1 -Seconds N -ShotList "a,b" -Tag t -Keys "t:vk,t:vk+vk@ms"` (uses the runtime's F8
-  capture, focuses the window before keys). Path to a board with a save: see `docs/JAMBOREE_PORT.md`.
+  capture). Path to a board with a save: see `docs/JAMBOREE_PORT.md`.
+- Test runs use background mode (the default in `run.ps1`, `SWR_BACKGROUND=1`): off-screen, never focused, muted,
+  the owner's pad and keyboard ignored, so tests don't interrupt someone using the PC. Don't launch the game in the
+  foreground (`-Foreground`, or `Recomp.exe` directly) unless the owner says it's fine at that time.
 - Record each bug's evidence, cause and fix in `docs/JAMBOREE_PORT.md` in the same PR as the fix.
