@@ -21,7 +21,9 @@ Built on **SwitchRecomp by MZ Labs** (AGPL v3), with fixes for this game. See [`
 | Minigames | work (played through to the results and back to the board) |
 | Dialogs, text, dice counters, character previews | render (they were clipped away before) |
 | Board spaces | render along the paths |
-| Known issues | more minigames and boards still to test |
+| Minigame select | roulette over the board (bonus, 1 vs 3, 2 vs 2 and 4-player rounds seen) |
+| Button prompts | follow the pad: Xbox labels by default, Switch positions with `pad_buttons=1` |
+| Known issues | character select can stutter when switching quickly; occasional small lag spikes; more minigames and boards still to test (see the playtest log in the port notes) |
 
 Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT.md`](docs/JAMBOREE_PORT.md).
 
@@ -42,6 +44,7 @@ Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT
 
 Saves go to `games/<Game>_data/save/`. Controls and options: [`README.txt`](README.txt) (F1 in game shows the keys).
 Keyboard: arrows = D-pad, WASD = left stick, X/Space = A, Z = B, C = X, V = Y, Q = L, E = R, Enter = +, Backspace = -.
+Hold Esc for 1.5 s to quit (a tap does nothing).
 
 ## Never commit or share
 

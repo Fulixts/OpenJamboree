@@ -28,6 +28,9 @@ The runtime source in `runtime/` is patched here; every change is in git (`git l
 | Title movie / attract cutscene choppy | **fixed** (bug 8): the video texture now updates every decoded picture |
 | Board spaces | **fixed** (bugs 9 and 10): the spaces along the paths show, near and far |
 | Input | keyboard via window messages, XInput controllers (by label: A confirms; `pad_buttons=1` for Switch positions) |
+| Button prompts with an Xbox pad | **fixed** (bug 11): the four-dot face-button icons point at the Xbox button to press |
+| Minigame select background | **fixed** (bug 12, workaround): the board shows behind the list instead of black |
+| Esc | no longer quits on a tap: hold it 1.5 s (the title bar says so) |
 | Audio | audren mixer runs (DSP-ADPCM voices, BFSTM streams); not checked by ear |
 
 Fastest path to a board with a save (keys): + skips the intro, Q+E at the title, A through the plaza, then in the
@@ -163,6 +166,40 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
   cached by their GLSL, so the old ones are rebuilt by themselves.
 - Result: the spaces along the paths render, near and far, at 60 FPS.
 
+### Bug 11: button prompts showed the Switch positions with an Xbox pad
+- Symptom (playtest): with `pad_buttons=0` (Xbox A = A) the "View Board" and dice prompts showed the four-dot icon
+  with the Switch position lit, so they pointed at the wrong Xbox button.
+- Evidence: the prompts are characters of the picture fonts `Parts.lyt/Font/bqfont_{small,middle,large}_extension.ffnt`
+  (in `romfs/Archive/font~font.nx.bea`, zstd). Each has one BC7 sheet (512x1024, 512x1024, 1024x1024 x2 layers) with
+  cells (cw+1)x(ch+1) apart from (1,1), rows stored bottom-up. Glyphs 6-9 are the A/B/X/Y letter buttons, glyphs 2-5
+  the diamond with the right (A), left (Y), top (X), bottom (B) button lit; the same order in all three sizes. The
+  playtest screenshot's "View Board" icon has the left dot lit (Switch Y).
+- Fix (`gpu_gl.c`, `k_icon_sheets`): the three sheets are recognised at texture creation by a sampled hash of their
+  guest memory, uploaded decoded (BC7 -> RGBA8 on the CPU, as the BCn fallback already does) and, while the pad is
+  mapped by label, cells 2<->5 and 3<->4 are swapped (right<->bottom, left<->top), which is where Xbox A/B/X/Y sit.
+  The letter icons already match by label. `pad_buttons=1` keeps the original sheet; a change re-uploads it. Nothing
+  of the game's art is added or shipped, the cells are only moved. `SWR_NO_ICON_SWAP=1` turns it off.
+- Result: on the board turn menu "Board" (Y) shows the top dot and "Dice Block" (X) the left dot. Approach credit:
+  mkw-recomp / SavageWindRecomp redraw their games' icon sheets on upload (MIT); this port only moves cells.
+
+### Bug 12: minigame select background black (workaround)
+- Symptom (playtest): the "4-Player Minigame" roulette showed on black instead of the blurred board, most of the time.
+- Evidence: `SWR_TRACE_ON_FILE=SM_BGM_BD00_MGSEL_ROLL@1200` traced the screen. The background is draw
+  `vs bc44ac40d42fc49d / fs 58ee2bd91d125591` sampling a 960x540 R11G11B10F snapshot RT, which held black.
+  `SWR_PROBE_FS=974265260d1f959e` showed the copy of the board view (`513010000`, 1152x648) into the snapshot was
+  correct (99% non-black). `SWR_WATCH_RT=960x540` then showed the sequence for the new snapshot RT in one frame, all
+  on channel 20: created, cleared, copied, **cleared again** (full surface, colour 0, render enable override on).
+  Earlier snapshots for other menus get one clear before the copy and are fine.
+- Cause: not found yet. The second clear is what the command stream says; why the console keeps the copy (or does
+  the copy later) is open. Candidates: CPU-side capture logic that depends on GPU fence/semaphore timing.
+- Workaround (`gpu_gl.c`, clear path): a colour clear of an RT whose last write in the same frame was the snapshot
+  copy shader is skipped (`SWR_KEEP_DRAWN_FS=<fs>` picks the shader, `0` turns it off). With it the board shows
+  behind "Bonus Minigame!", the roulette list and the result banner.
+
+### Esc quit the game on a stray press
+- Esc now has to be held 1.5 s (the window title shows "Hold Esc to quit" while it is down). Closing the window and
+  Alt+F4 work as before.
+
 ### Recompiling with the hints file: slower, not adopted
 - Rebuilding `Recomp_code.dll` with `Recomp.hints` (109 addresses) took the board from 60 to ~42 FPS with the GPU
   thread ~25% busy (CPU bound), and fixed nothing visible. The previous DLL stays.
@@ -170,7 +207,7 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 ### Controller: Xbox A acted as Switch B
 - The XInput mapping was by position (Xbox B = Switch A), so the confirm button was on the right and Xbox A went back.
   New `[Controls] pad_buttons`: 0 (default) maps by label (Xbox A = A confirms), 1 restores the Switch positions.
-  Jamboree's button prompts are position glyphs (four dots), which match `pad_buttons=1`.
+  Jamboree's four-dot prompts are position glyphs; with `pad_buttons=0` they are swapped to the Xbox positions (bug 11).
 
 ### Build fixes (the source as shipped didn't build with the bundled GCC 16)
 - `plat.c`: missing `#include <math.h>`; `svc_core.c`: `ipc_warn_once` used before its declaration.
@@ -209,6 +246,12 @@ Keyboard (runtime defaults): arrows = D-pad, WASD = left stick, X/Space = A, Z =
 | `SWR_NO_ENTRY_FLUSH=1` | don't flush a held-back draw before reading a GPFIFO entry (pre-bug-9) |
 | `SWR_VB_FULLCHECK=1` | hash every cached vertex/index/storage buffer on every use (finds stale buffer bugs) |
 | `SWR_ZALWAYS_FS=<hash>` | draws with that fragment shader skip the depth test (tells a draw lost to depth from one with no pixels) |
+| `SWR_TRACE_ON_FILE=<romfs path part>[@ms]` | F5 trace that long after a romfs file is first read (screens that are hard to time, e.g. a music file) |
+| `SWR_TRACE_TEX=1` | F5 traces also save a thumbnail of every sampled RT at each draw (`dNNNN_texK.ppm`) |
+| `SWR_PROBE_FS=<fs>[,<rt addr>]` | after each draw with that fragment shader, log the average colour of its target (and of the given RT) |
+| `SWR_WATCH_RT=<w>x<h>` | log what happens to RTs of that size: created, parked, revived, cleared (with the clear's registers), dropped, freed; `SWR_WATCH_RT_TRACE=1` traces the frame after a second clear in one frame |
+| `SWR_NO_ICON_SWAP=1` | keep the game's button icon sheets as they are (bug 11) |
+| `SWR_KEEP_DRAWN_FS=<fs>` / `0` | which copy shader protects its RT from a clear later in the frame (bug 12); 0 = off |
 | `_work/sdis.py <sh_*.bin>` | rough listing of a dumped shader (word index = `case N` in the GLSL, guards, CC tests) |
 | (F5 trace) | each draw also lists scissor, clip control, depth bias, stencil function, vertex attribute formats; a skipped target-less draw lists its targets, stream-out state and storage writes and dumps its vertex shader |
 
@@ -271,13 +314,32 @@ that no file in it came out of the dump (`.gitignore` here already excludes `gam
 Note: the minigames and boards are NROs in `romfs/nro/NX_Release/`. The recompiler compiles them too
 (`nxloader.romfs_nros`), so the romfs NROs are part of the code build input as well.
 
-## 7. Next steps
+## 7. Playtest log (found, not all fixed yet)
+
+Everything seen in manual and scripted play goes here first, fixed or not, so nothing gets lost.
+
+| Date | Where | What | State |
+| --- | --- | --- | --- |
+| 2026-11-25 | board prompts | four-dot icons showed Switch positions with an Xbox pad | fixed (bug 11) |
+| 2026-11-25 | minigame select | black background instead of the board | worked around (bug 12), cause open |
+| 2026-11-25 | anywhere | a stray Esc closed the game | changed: hold 1.5 s |
+| 2026-11-25 | character select | moving between characters quickly can stutter; the newly loaded animated character sometimes looks glitched for a split second | open (owner's playtest) |
+| 2026-11-25 | board, general play | small lag spikes now and then | open (owner's playtest); needs `pause:` log lines and an F5 trace at a spike |
+| 2026-11-25 | resume screen | the party in progress shows 12/31/1969 | to check: the save may predate the bug 6 fix |
+| 2026-11-25 | resuming a party | a few white frames (~2 s) between "Continue?" and the board | to check against the console (probably the load fade) |
+| 2026-11-25 | minigame practice | "-/+ Start!" needs - and + held; the script's taps stay on the practice screen | expected; see hold inputs |
+| 2026-11-24 | board | a waiting player on a far space looked see-through | open |
+
+## 8. Next steps
 1. Board: a waiting player (Mario, on a space further down the path) looked see-through. Check whether that's the
    game's own fade or a rendering bug.
 2. Plaza overview: the paving around the fountain looks noisy from far away (reported; likely the texture's lower
    mips, ASTC decoded to BC3 on GPUs without ASTC). Not reproduced yet: needs the first-visit plaza tour.
-3. Character select: switching characters quickly stutters (new models and shaders load on demand).
-4. More minigames and the other boards; a full 10-turn party to the results.
-5. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
-6. Why the hints rebuild is slower (see above) before using it; audio by ear, performance on long sessions.
-7. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.
+3. Character select: switching characters quickly stutters and the new model can flash glitched for a frame (new
+   models and shaders load on demand). Log `pause:` lines and shader compiles (`SWR_CMP_LOG=1`) while cycling.
+4. Bug 12's real cause (why the console keeps the snapshot copy), then drop the workaround.
+5. Small lag spikes during play: catch one with `pause:` lines and an F5 trace.
+6. More minigames and the other boards; a full 10-turn party to the results.
+7. Hold-to-start ("-/+ Start!" in minigame practice) and other hold inputs with a real pad.
+8. Why the hints rebuild is slower (see above) before using it; audio by ear, performance on long sessions.
+9. Packaging: fold `get_gxx.py` into `tool/get_deps.py`, make `--link` the tool's default, add CHANGELOG lines.

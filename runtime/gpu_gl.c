@@ -214,6 +214,7 @@ typedef struct Tex {
   u32 huge_w, huge_h;   /* a texture too big for the host: the size the game gave it */
   u32 extw;   /* g_extw_gen when the video engine writes were last compared with this texture */
   u32 skip; u64* lhash; u8* lmask; u32 vt_next;   /* virtual textures: top mips left out, per layer hash, layers to upload */
+  u8 icons, icons_on;   /* the game's button icon sheet (1 + k_icon_sheets index), and whether its icons were swapped */
   struct Tex* next;
 } Tex;
 static int g_ww; static int ww_dirty(u64 ga, u64 len, u32 since); static u64 st_tex_wwskip;
@@ -250,6 +251,9 @@ static u32 TD(const Tex* t, u32 v){ return swr_scaled_dim(v,TS(t)); }
 
 #define TEXH 4096
 static Tex* texh[TEXH]; static u32 g_frame;
+/* SWR_WATCH_RT=<w>x<h>: log what happens to RTs of that size (created, parked, revived, cleared, reloaded, freed) */
+static int rt_watched(u32 w, u32 h){ static int ww=-1, wh; if(ww<0){ const char* e=getenv("SWR_WATCH_RT"); ww=0; wh=0; if(e) sscanf(e,"%dx%d",&ww,&wh); } return ww && (u32)ww==w && (u32)wh==h; }
+#define RT_WATCH(t,what) do{ if((t) && rt_watched((t)->w,(t)->h)) LOG("watch rt: frame %u %s %llx (alias %llx) %ux%u fkey %x id %u\n",g_frame,what,(unsigned long long)(t)->gva,(unsigned long long)(t)->alias,(t)->w,(t)->h,(t)->fkey,(t)->id); }while(0)
 
 static u32 hkey(u64 a){ return (u32)((a>>8)^(a>>20))&(TEXH-1); }
 
@@ -438,6 +442,33 @@ static void bc3_rows(void* c, u32 a, u32 b){ BcEnc* j=c; u32 bx=(j->w+3)/4;
 static void bc_rows(void* c, u32 a, u32 b){ DecJob* j=c; u32 bx=(j->w+3)/4; u32 y0=a*4, y1=b*4; if(y1>j->h) y1=j->h; if(y0>=y1) return;
   swr_bc_decode((int)j->kind,j->src+(u64)a*bx*j->bsz,j->w,y1-y0,(u32*)(j->dst+(u64)y0*j->w*4)); }
 
+/* ---- button icons for Xbox pads (docs/JAMBOREE_PORT.md, bug 11)
+   The game draws its button prompts with picture fonts (Parts.lyt/Font/bqfont_{small,middle,large}_extension.ffnt):
+   glyphs 6-9 are the A, B, X, Y buttons and glyphs 2-5 the face-button diamond with one button filled in, at the
+   Switch positions: 2 right (A), 3 left (Y), 4 top (X), 5 bottom (B). With the pad mapped by label (pad_buttons=0,
+   Xbox A presses A) the letters are right but the diamonds point at the wrong button: Xbox A is at the bottom, B on
+   the right, X on the left, Y on top. So those sheets are decoded on the cpu (BC7 -> RGBA8) and the diamond cells
+   swapped: right <-> bottom, left <-> top. The sheets are found by a sampled hash of their guest memory; cells are
+   (cw+1) x (ch+1) apart from (1,1), rows stored bottom-up. Nothing of the game's art ships: the cells are moved. */
+extern int g_pad_icons_xbox;   /* svc_hid.c, set by the backend: 1 = face buttons mapped by label, icons follow the Xbox positions */
+typedef struct { u64 fp; u32 w, cw, ch, cols; } IconSheet;
+static const IconSheet k_icon_sheets[]={
+  {0x555ab61b7a6d52bcull,512,72,73,7},     /* small */
+  {0xa88538fc384ff424ull,512,96,95,5},     /* middle */
+  {0x86ef3a21bec9d05full,1024,180,177,5}}; /* large (2 layers, the diamonds are in layer 0) */
+static int icon_sheet_of(u64 gva, u32 w, u32 h){
+  if(h!=1024 || (w!=512 && w!=1024) || getenv("SWR_NO_ICON_SWAP")) return -1;
+  u64 n=(u64)w*h; u64* b=malloc(n); if(!b) return -1;   /* BC7: one byte a texel */
+  gmem_read(gva,b,n); u64 hh=0xcbf29ce484222325ull; for(u64 i=0;i<n/8;i+=97) hh=(hh^b[i])*0x100000001b3ull; free(b);
+  for(int k=0;k<(int)(sizeof k_icon_sheets/sizeof *k_icon_sheets);k++) if(k_icon_sheets[k].fp==hh && k_icon_sheets[k].w==w){
+    LOG("gpu: button icon sheet %d (%ux%u) at %llx: icons follow the pad's labels when pad_buttons=0\n",k,w,h,(unsigned long long)gva); return k; }
+  return -1; }
+static void icon_cells_swap(u8* px, u32 W, u32 H, const IconSheet* s, int a, int b){
+  u32 ax=1+(a%s->cols)*(s->cw+1), ay=H-(1+(a/s->cols)*(s->ch+1))-s->ch, bx=1+(b%s->cols)*(s->cw+1), by=H-(1+(b/s->cols)*(s->ch+1))-s->ch;
+  if(ax+s->cw>W || bx+s->cw>W || ay+s->ch>H || by+s->ch>H) return;
+  u8 tmp[1024*4]; for(u32 y=0;y<s->ch;y++){ u8* p=px+((size_t)(ay+y)*W+ax)*4; u8* q=px+((size_t)(by+y)*W+bx)*4;
+    memcpy(tmp,p,s->cw*4); memcpy(p,q,s->cw*4); memcpy(q,tmp,s->cw*4); } }
+
 static void tex_upload(Tex* t){ st_tex_up+=t->size;
   { static int done; const char* e= done? NULL : getenv("SWR_DUMPTEX"); u32 dw=0, dh=0; if(e && sscanf(e,"%ux%u",&dw,&dh)==2 && t->w==dw && t->h==dh && t->size){   /* debug: raw guest bytes of one texture */
       done=1; u8* b=malloc(t->size); if(b){ gmem_read(t->gva,b,t->size); FILE* f=fopen("captures/tex_raw.bin","wb"); if(f){ fwrite(b,1,t->size,f); fclose(f); } free(b); }
@@ -493,6 +524,8 @@ static void tex_upload(Tex* t){ st_tex_up+=t->size;
             else if(f->dec==11){ rr=(v&31)*255/31; gg=((v>>5)&31)*255/31; bb=((v>>10)&31)*255/31; aa=(v>>15)? 255 : 0; }
             else { rr=(v&31)*255/31; gg=((v>>5)&63)*255/63; bb=((v>>11)&31)*255/31; aa=255; }
             o[(size_t)y*lw+x]=rr|(gg<<8)|(bb<<16)|(aa<<24); } }
+        if(t->icons && l==0 && layer==0){ t->icons_on=(u8)g_pad_icons_xbox;
+          if(g_pad_icons_xbox){ const IconSheet* s=&k_icon_sheets[t->icons-1]; icon_cells_swap(dec,lw,lh,s,2,5); icon_cells_swap(dec,lw,lh,s,3,4); } }
         up=dec; }
       { static int dmp=-1, nd; if(dmp<0) dmp=getenv("SWR_DUMP_TEX")!=NULL;
         if(dmp && l==0 && layer==0 && nd<20 && (f->astc || (!f->compressed && f->bpp==4))){ char pth[128]; snprintf(pth,sizeof pth,"tex_%02d_%llx_%ux%u.ppm",nd++,(unsigned long long)t->gva,lw,lh);
@@ -918,7 +951,7 @@ static Tex* tex_from_tic_(u32* tic){
   /* an RT the GPU wrote isn't dropped because guest memory differs: that memory is stale until the next flush.
      smo's 1600x900 background RT got thrown away every frame that way. SWR_NO_RT_TRUST=1 checks it again */
   static int rt_trust=-1; if(rt_trust<0) rt_trust=getenv("SWR_NO_RT_TRUST")==NULL;
-  if(rt && rt->frame_checked!=g_frame){ rt->frame_checked=g_frame; if(!(rt_trust && rt->gpu_written) && rt_sig(gva)!=rt->hash){
+  if(rt && rt->frame_checked!=g_frame){ rt->frame_checked=g_frame; if(!(rt_trust && rt->gpu_written) && rt_sig(gva)!=rt->hash){ RT_WATCH(rt,"dropped (memory changed)");
       static int said; if(said<sw2_cap(8)){ said++; LOG("gpu: rt %llx %ux%u (format %x) dropped, its memory changed; a %ux%u texture (format %x) reads that memory now\n",(unsigned long long)gva,rt->w,rt->h,rt->fkey&0xFFFF,w,h,fkey&0x7FFFF); }
       rt->gva=~0ull; rt=NULL; g_tmap_gen++; } }
   if(rt && rt->vol && rt->w==w && rt->h==h && d<=rt->vol->d && ((type==2 && rt->vol->target==GL_TEXTURE_3D) || ((type==5 || type==1) && rt->vol->target==GL_TEXTURE_2D_ARRAY))){
@@ -949,6 +982,7 @@ static Tex* tex_from_tic_(u32* tic){
   for(Tex* t=texh[hkey(gva)];t;t=t->next){
     if(t->gva==gva && ((t->w==w && t->h==h) || (t->huge_w==w && t->huge_h==h)) && t->d==d && t->fkey==fkey && t->target==target && !t->is_rt){
       t->last_used=g_frame;
+      if(t->icons && t->icons_on!=(u8)g_pad_icons_xbox) tex_upload(t);   /* pad_buttons changed (F1) */
       if(t->skip){ if((i32)(g_frame-t->vt_next)>=0) vt_refresh(t,0); return t; }
       if(g_extw_gen!=t->extw && tex_ext_written(t)){ t->stable=0; t->next_check=g_frame; t->frame_checked=g_frame-1;
         static u32 n; if(++n%600==1) LOG("video: %u texture refreshes after video engine writes (frame %u)\n",n,(u32)g_frame); }
@@ -994,7 +1028,11 @@ static Tex* tex_from_tic_(u32* tic){
     vt_refresh(t,1);
     { static int said; if(said<8){ said++; LOG("gpu: virtual texture %ux%ux%u at %llx kept at %ux%u (top %u mips left out)\n",w,h,d,(unsigned long long)gva,w>>k,h>>k,k); } }
     return t; }
+  int icons=-1;   /* the button icon sheets go up decoded, so their cells can be moved (k_icon_sheets) */
+  if((tic[0]&0x7F)==0x17 && levels==1 && bl && (target==GL_TEXTURE_2D || target==GL_TEXTURE_2D_ARRAY) && (icons=icon_sheet_of(gva,w,h))>=0){
+    f.dec=7; f.ifmt= f.ifmt==0x8E8D? GL_SRGB8_ALPHA8 : GL_RGBA8; }
   Tex* t=tex_create(gva,w,h,d,levels,target,f,fkey,bl,bh,bd,pitch,0);
+  t->icons=(u8)(icons+1);
   u64 sz=0; u32 dd= target==GL_TEXTURE_3D? d : 1; for(u32 l=0;l<levels;l++) sz+=bl? bl_level_size(w,h,dd,&f,bh,bd,l,NULL) : (u64)pitch*((h+f.bh-1)/f.bh);
   if(target!=GL_TEXTURE_3D){ if(bl && d>1) sz=layer_stride(sz,bh,bd,g_new_tws); sz*=d; }
   t->size=sz; t->hash=mem_hash(gva,sz); t->frame_checked=g_frame; t->last_used=g_frame;
@@ -1559,8 +1597,8 @@ static Tex* rt_texture(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth){
      GL sync plus a deswizzle every time */
   Tex* rv=NULL;
   for(Tex* t=texh[hkey(gva)];t;t=t->next) if(t->gva==~0ull && t->alias==gva && t->is_rt && t->w==w && t->h==h && t->fkey==fkey && !rv) rv=t;
-  for(Tex* t=texh[hkey(gva)];t;t=t->next) if(t->gva==gva && t->is_rt){ t->gva=~0ull; t->alias=gva; g_tmap_gen++; }
-  if(rv && !getenv("SWR_NO_RT_ALIAS")){ rv->gva=gva; rv->alias=0; rv->last_used=g_frame; rv->hash=rt_sig(gva); rv->frame_checked=g_frame; return rv; }
+  for(Tex* t=texh[hkey(gva)];t;t=t->next) if(t->gva==gva && t->is_rt){ RT_WATCH(t,"parked"); t->gva=~0ull; t->alias=gva; g_tmap_gen++; }
+  if(rv && !getenv("SWR_NO_RT_ALIAS")){ rv->gva=gva; rv->alias=0; rv->last_used=g_frame; rv->hash=rt_sig(gva); rv->frame_checked=g_frame; RT_WATCH(rv,"revived"); return rv; }
   Tex* t=tex_create(gva,w,h,1,1,GL_TEXTURE_2D,f,fkey,!((tile>>12)&1),(tile>>4)&15,(tile>>8)&15,0,1);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
   /* seed from memory in case the CPU wrote it */
@@ -1568,7 +1606,7 @@ static Tex* rt_texture(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth){
     u64 sz=(u64)w*h*4; u8* lin=malloc(sz); u8* src=gmem_ptr(gva,sz*2);
     if(src && lin && t->bl){ deswizzle(lin,w*4,src,w*4,h,t->bh); glBindTexture(GL_TEXTURE_2D,t->id); glTexSubImage2D(GL_TEXTURE_2D,0,0,0,w,h,GL_RGBA,GL_UNSIGNED_BYTE,lin); }
     free(lin); }
-  t->hash=rt_sig(gva);
+  t->hash=rt_sig(gva); RT_WATCH(t,"created");
   return t; }
 
 /* 3D RT (tile mode bit 16) or array (layers at 0x206), drawn in one pass with the VS picking the layer or slice by
@@ -1866,7 +1904,7 @@ void gpu_gl_rt_flush(u64 gva){
 void gpu_gl_rt_reload(u64 gva){
   Tex* t=tex_find_rt(gva);
   /* DMA over an RT we can't reload (R8 video luma etc): drop the RT and read memory instead */
-  if(t && !rt_plain(t)){ t->gva=~0ull; g_tmap_gen++; trace_note("  (new memory over rt %llx: rt discarded)\n",(unsigned long long)gva); return; }
+  if(t && !rt_plain(t)){ RT_WATCH(t,"discarded (DMA over it)"); t->gva=~0ull; g_tmap_gen++; trace_note("  (new memory over rt %llx: rt discarded)\n",(unsigned long long)gva); return; }
   if(!rt_plain(t)) return;
   u32 w=t->w, h=t->h; u64 sz= t->bl? bl_level_size(w,h,1,&t->f,t->bh,0,0,NULL) : (u64)w*h*4; u8* src=gmem_ptr(gva,sz); if(!src) return;
   u8* lin=malloc((size_t)w*h*4); if(!lin) return;   /* out of memory: keep what the RT has */
@@ -2604,7 +2642,9 @@ static void tr_save(const char* path, const u8* rgba, u32 w, u32 h){
     fwrite(row,1,(size_t)w*6,f); }
   free(row); fclose(f); }
 
-static void tr_thumb(Tex* t, char* out){ state_dirty();
+static void tr_thumb_(Tex* t, char* out, int unit);
+static void tr_thumb(Tex* t, char* out){ tr_thumb_(t,out,-1); }
+static void tr_thumb_(Tex* t, char* out, int unit){ state_dirty();
   strcpy(out,"-"); if(!t || t->f.depth || t->f.is_int || g_tr_img>=2500) return;
   if(!g_tr_fb){ glGenFramebuffers(1,&g_tr_fb); glGenTextures(1,&g_tr_tx); glBindTexture(GL_TEXTURE_2D,g_tr_tx); glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,TRW,TRH); }
   GLboolean sc=glIsEnabled(GL_SCISSOR_TEST), sr=glIsEnabled(GL_FRAMEBUFFER_SRGB);
@@ -2615,6 +2655,7 @@ static void tr_thumb(Tex* t, char* out){ state_dirty();
   static u8 px[TRW*TRH*4];
   glBindFramebuffer(GL_READ_FRAMEBUFFER,g_tr_fb); glReadBuffer(GL_COLOR_ATTACHMENT0); glPixelStorei(GL_PACK_ALIGNMENT,1); glReadPixels(0,0,TRW,TRH,GL_RGBA,GL_UNSIGNED_BYTE,px);
   glBindFramebuffer(GL_FRAMEBUFFER,g_fbo); if(sc) glEnable(GL_SCISSOR_TEST); if(sr) glEnable(GL_FRAMEBUFFER_SRGB);
+  if(unit>=0){ char p[128]; snprintf(p,sizeof p,"%s/d%04d_tex%d.ppm",g_tr_dir,g_tr_n,unit); tr_save(p,px,TRW,TRH); g_tr_img++; snprintf(out,40,"d%04d_tex%d.ppm",g_tr_n,unit); return; }   /* a sampled RT (SWR_TRACE_TEX=1) */
   u64 h=fast_hash(px,sizeof px,0); if(h==t->tr_last){ strcpy(out,"(no change)"); return; }
   t->tr_last=h; char p[128]; snprintf(p,sizeof p,"%s/d%04d.ppm",g_tr_dir,g_tr_n); tr_save(p,px,TRW,TRH); g_tr_img++; snprintf(out,32,"d%04d.ppm",g_tr_n); }
 
@@ -2661,7 +2702,9 @@ static void tr_textures(GpuChannel* ch, int stage, Sh* sh){
           free(fb); trace_note("     contents: vol_%llx_%ux%ux%u.f32\n",(unsigned long long)t->gva,vw,vh,vz); } } }
     if(t && t->is_rt){ Tex* w= t->wfs? t : t->lay && t->lay->wfs? t->lay : NULL; Tex* src= w? w : tex_find_rt(t->gva);
       if(src && src->wfs) trace_note("     written by fs %016llx, frame %u (now %u)\n",(unsigned long long)src->wfs,src->wframe,g_frame);
-      tr_rt_history(src? src : t); } } }
+      tr_rt_history(src? src : t);
+      /* SWR_TRACE_TEX=1: also a thumbnail of what the sampled RT holds at this draw */
+      { static int tt=-1; if(tt<0) tt=getenv("SWR_TRACE_TEX")!=NULL; if(tt && !t->f.depth && !t->f.is_int && t->target==GL_TEXTURE_2D){ char nm[48]; tr_thumb_(t,nm,i); trace_note("     contents: %s\n",nm); } } } } }
 
 /* diag: remember which fragment shader last wrote each RT, and keep the code of the ones that write small targets
    (cubemap faces, LUTs), those are usually drawn once at load way before a capture */
@@ -3165,6 +3208,18 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
   }
   if(side_draw){ glDisable(0x8C89); glBindFramebuffer(GL_FRAMEBUFFER,g_fbo); g_fb_sig_ok=0; }
   if(zalways) glDepthFunc(cmp_func(r[0x4C3]));
+  /* SWR_PROBE_FS=<fs hash>[,<rt address>]: after each draw with that fragment shader, log the average color of its
+     target and of the RT at the given address (did a copy read a black source?) */
+  { static u64 pfs=1, psrc; if(pfs==1){ const char* e=getenv("SWR_PROBE_FS"); pfs= e? strtoull(e,NULL,16) : 0; const char* c= e? strchr(e,',') : NULL; psrc= c? strtoull(c+1,NULL,16) : 0; }
+    if(pfs && fs->hash==pfs){ Tex* q[2]={ g_nrt>0? g_rt[0] : NULL, NULL };
+      if(psrc) for(int k=0;k<TEXH && !q[1];k++) for(Tex* t=texh[k];t;t=t->next) if(t->is_rt && t->gva==psrc && !t->crop){ q[1]=t; break; }
+      char msg[2][96]; for(int i=0;i<2;i++){ msg[i][0]=0; Tex* t=q[i]; if(!t) continue; u32 w=TW(t), h=TH(t); if(!w || !h || w>4096 || h>4096) continue;
+        GLuint fb; glGenFramebuffers(1,&fb); glBindFramebuffer(GL_READ_FRAMEBUFFER,fb); glFramebufferTexture2D(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,t->id,0);
+        u8* px=malloc((size_t)w*h*4); if(px && glCheckFramebufferStatus(GL_READ_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE){ glPixelStorei(GL_PACK_ALIGNMENT,1); glReadPixels(0,0,(GLsizei)w,(GLsizei)h,GL_RGBA,GL_UNSIGNED_BYTE,px);
+          u64 sr=0,sg=0,sb=0,sa=0,nz=0,np=(u64)w*h; for(u64 k=0;k<np;k++){ u8* c=px+k*4; sr+=c[0]; sg+=c[1]; sb+=c[2]; sa+=c[3]; if(c[0]+c[1]+c[2]>12) nz++; }
+          snprintf(msg[i],sizeof msg[i],"%llx %ux%u avg (%llu,%llu,%llu,a%llu) non-black %llu%%",(unsigned long long)t->gva,t->w,t->h,sr/np,sg/np,sb/np,sa/np,nz*100/np); }
+        free(px); glDeleteFramebuffers(1,&fb); }
+      g_fb_sig_ok=0; LOG("probe: frame %u ch %u fs %016llx: target %s | source %s\n",g_frame,(unsigned)ch->id,(unsigned long long)fs->hash,msg[0],msg[1][0]? msg[1] : "-"); } }
   gbuf_writeback();
   /* SWR_DRAW_SYNC=1 (with SWR_NO_GLQ=1): finish every draw and log the slow ones, to find a draw that hangs the gpu */
   { static int ds=-1; if(ds<0) ds= getenv("SWR_DRAW_SYNC")? 1 : 0;
@@ -3219,8 +3274,16 @@ void r3d_clear_gl(GpuChannel* ch, u32 v){ if(!swr_render_enabled(ch->r3d)) retur
       GLbitfield m=GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT;
       if((v&2) && g_zt->f.fmt==GL_DEPTH_STENCIL){ glStencilMaskSeparate(GL_FRONT_AND_BACK,0xFF); glClearStencil((GLint)r[0x368]); m|=GL_STENCIL_BUFFER_BIT; }
       glClear(m); v&=~3u; t=NULL; }
-    if(t){ glColorMaski(rt,(v>>2)&1,(v>>3)&1,(v>>4)&1,(v>>5)&1); float cc[4]; memcpy(cc,&r[0x360],16);
-      if(t->f.is_int && ifmt_signed(t->f.ifmt)){ GLint si[4]={(GLint)cc[0],(GLint)cc[1],(GLint)cc[2],(GLint)cc[3]}; glClearBufferiv(GL_COLOR,rt,si); }
+    if(t){ glColorMaski(rt,(v>>2)&1,(v>>3)&1,(v>>4)&1,(v>>5)&1); float cc[4]; memcpy(cc,&r[0x360],16); RT_WATCH(t,"cleared");
+      /* Jamboree's minigame select background (docs/JAMBOREE_PORT.md, bug 12): the board is copied into a new 960x540
+         snapshot RT by fs 974265260d1f959e and the same RT is cleared again later in that frame, on the same channel,
+         so the menu drew it black. Workaround: a clear of an RT whose last write this frame was that copy is skipped.
+         SWR_KEEP_DRAWN_FS=<fs hash> picks another shader, 0 turns it off */
+      { static u64 kf=1; if(kf==1){ const char* e=getenv("SWR_KEEP_DRAWN_FS"); kf= e? strtoull(e,NULL,16) : 0x974265260d1f959eull; }
+        if(kf && t->hist && t->nhist && t->hist[(t->nhist-1)%RTH_N].fs==kf && t->hist[(t->nhist-1)%RTH_N].frame==g_frame){ { static int said; if(said<sw2_cap(8)){ said++; LOG("gpu: clear of %llx right after its snapshot copy skipped (frame %u)\n",(unsigned long long)t->gva,g_frame); } } t=NULL; } }
+      if(t && rt_watched(t->w,t->h) && getenv("SWR_WATCH_RT_TRACE")){ static u64 lastg; static u32 lastf; if(lastg==t->gva && lastf==g_frame && !g_tr_on){ g_tr_arm=1; LOG("watch rt: second clear in a frame, tracing the next frame\n"); } lastg=t->gva; lastf=g_frame; }
+      if(t && rt_watched(t->w,t->h)) LOG("watch rt:   clear ch %u v=%x rt%u of %d color=(%.2f,%.2f,%.2f,%.2f) surfctl=%x rect=%d x=%x y=%x scissor0=%x %x/%x rtctl=%x rt0=%llx regs rt0 %llx %ux%u fmt %x renden %x/%x/%x\n",(unsigned)ch->id,v,rt,g_nrt,cc[0],cc[1],cc[2],cc[3],r[0x43E],crect,cxs,cys,r[0x380],r[0x381],r[0x382],r[0x487],(unsigned long long)(g_rt[0]? g_rt[0]->gva : 0),(unsigned long long)(((u64)r[0x200+rt*0x10]<<32)|r[0x201+rt*0x10]),r[0x202+rt*0x10],r[0x203+rt*0x10],r[0x204+rt*0x10],r[0x4e],r[0x556],r[0x651]);
+      if(!t){} else if(t->f.is_int && ifmt_signed(t->f.ifmt)){ GLint si[4]={(GLint)cc[0],(GLint)cc[1],(GLint)cc[2],(GLint)cc[3]}; glClearBufferiv(GL_COLOR,rt,si); }
       else if(t->f.is_int){ GLuint ui[4]={(GLuint)cc[0],(GLuint)cc[1],(GLuint)cc[2],(GLuint)cc[3]}; glClearBufferuiv(GL_COLOR,rt,ui); }
       else glClearBufferfv(GL_COLOR,rt,cc); } }
   if(g_tr_on && g_tr_n<6000){ g_tr_n++; float cc[4]; memcpy(cc,&r[0x360],16); char nm[40]; Tex* t= rt<8? g_rt[rt] : NULL;
@@ -3545,6 +3608,7 @@ static void present_cpu(u32* px, int w, int h){
 static u64 st_tex_evict, st_vb_evict;
 
 static void tex_free(Tex* t){
+  if(t->is_rt) RT_WATCH(t,"freed");
   if(t==g_view_rt) g_view_rt=NULL;
   glDeleteTextures(1,&t->id); if(t->view) glDeleteTextures(1,&t->view); if(t->zc){ glDeleteTextures(1,&t->zc); t->zc=0; }
   if(t->crop){ glDeleteTextures(1,&t->crop->id); if(t->crop->view) glDeleteTextures(1,&t->crop->view); free(t->crop); }

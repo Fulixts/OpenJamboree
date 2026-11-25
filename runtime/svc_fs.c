@@ -4,6 +4,7 @@
 /* fs: RomFS (built on the fly from an extracted romfs/ folder, or a romfs.bin), plus save data and SD card mapped
    to normal folders */
 #include "rt.h"
+volatile u64 g_trace_at_ns;   /* SWR_TRACE_ON_FILE: when the backend should take an F5 trace (0 = none) */
 #include <ctype.h>
 
 #define FS_NOTFOUND RC(2,1)
@@ -149,7 +150,12 @@ int romfs_read(u64 off, void* dst, u64 size){
 #ifdef SWR_HAVE_VP9
     { extern void vp9_note_file(const char* path); vp9_note_file(f->path); }
 #endif
-    if(!f->logged){ f->logged=1; LOG("romfs: %s (%.1f KB)\n",f->path+g_romdir_len,(double)f->size/1024.0); }
+    if(!f->logged){ f->logged=1; LOG("romfs: %s (%.1f KB)\n",f->path+g_romdir_len,(double)f->size/1024.0);
+      /* SWR_TRACE_ON_FILE=<part of a romfs path>[@ms]: take an F5 trace that long after the file is first read (a
+         screen that is hard to reach on time by hand, e.g. the minigame select music SM_BGM_BD00_MGSEL_ROLL@1500) */
+      { static const char* e=(const char*)1; if(e==(const char*)1) e=getenv("SWR_TRACE_ON_FILE");
+        if(e && *e){ char pat[128]; snprintf(pat,sizeof pat,"%s",e); char* at=strchr(pat,'@'); u64 ms=0; if(at){ *at=0; ms=strtoull(at+1,NULL,10); }
+          if(strstr(f->path+g_romdir_len,pat)){ g_trace_at_ns=plat_ns()+ms*1000000ull+1; LOG("trace: %s read, F5 trace in %llu ms\n",pat,(unsigned long long)ms); } } } }
     FILE* fp=rf_open(f->path);
     if(!fp || plat_pread(fp,d,n,off-f->off)<(int)n){ memset(d,0,n); }
     d+=n; off+=n; size-=n;
