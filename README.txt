@@ -77,13 +77,14 @@ notice) that the recompiler and every recompiled game show when they start.
   driver up to date). Linux and the Steam Deck work through Proton.
 
   Controls
-    Xbox / XInput controller: same as the Switch one, by position.
+    Xbox / XInput controller: by label (Xbox A = A, B = B, X = X, Y = Y); the
+              on-screen button icons follow it. pad_buttons=1 maps by position.
     Keyboard: Arrows = D-Pad, WASD = left stick, IJKL = right stick,
               X/Space = A, Z = B, C = X, V = Y, Q = L, E = R, 1 = ZL, 3 = ZR,
               Enter = +, Backspace = -
     F1 help   F3 screenshot   F4 FPS limit 60 / unlimited   F5 diagnostic trace
     F7 record .mp4 video   F8 full resolution PNG   F11 or Alt+Enter fullscreen
-    Esc quit
+    Hold Esc (1.5 s) to quit
 
   Options (MyGame.ini, rewritten on every start with all the available keys):
     docked=1               TV mode (1080p) instead of handheld (720p)

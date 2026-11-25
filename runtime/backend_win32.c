@@ -2,7 +2,7 @@
    Licensed under the GNU Affero General Public License v3.0, see LICENSE.txt and NOTICE.txt.
    Forks and derived works have to keep the credit to SwitchRecomp by MZ Labs and the startup screen. */
 /* win32 backend: window, WGL, keyboard, XInput.
-   F1 help  F3 screenshot  F4 fps limit  F11 fullscreen  Esc quit */
+   F1 help  F3 screenshot  F4 fps limit  F11 fullscreen  hold Esc quit */
 #include "rt.h"
 #include "audio.h"
 #include <windows.h>
@@ -160,7 +160,7 @@ static const char* const cw_keys[][2]={
   {"L  R  ZL  ZR","Q  E  1  3"}, {"+  -","Enter  Backspace"}, {"Controller","Xbox (XInput) pad"}};
 static const char* const cw_fkeys[][2]={
   {"F1","This page"}, {"F3","Screenshot"}, {"F4","FPS limit on/off"}, {"F5","Diagnostic trace"},
-  {"F7","Record video"}, {"F8","Full resolution capture"}, {"F11","Fullscreen"}, {"Esc","Quit the game"}};
+  {"F7","Record video"}, {"F8","Full resolution capture"}, {"F11","Fullscreen"}, {"Esc","Hold 1.5 s to quit"}};
 static int cw_sel;
 static HFONT cw_font(int px, int weight){ return CreateFontA(-px,0,0,0,weight,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,"Segoe UI"); }
 static void cw_value(int i, char* o, size_t n){
@@ -260,6 +260,7 @@ static u64 keymap(WPARAM k){
     case 'J': return 1ull<<44; case 'I': return 1ull<<45; case 'L': return 1ull<<46; case 'K': return 1ull<<47; }
   return 0; }
 
+static u64 g_esc_t0;   /* when Esc went down (0 = up): held 1.5 s quits */
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   switch(m){
   case WM_CLOSE: LOG("window: closed by the user or the system\n"); g_quit=1; return 0;
@@ -273,8 +274,12 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   case WM_KEYDOWN:
     /* a held key auto repeats (bit 30), the one shot actions below only fire on the first press or holding F7
        would start and stop the recording every frame */
-    if((l&(1<<30)) && (w==VK_ESCAPE||w==VK_F1||w==VK_F3||w==VK_F4||w==VK_F5||w==VK_F7||w==VK_F8||w==VK_F11)) return 0;
-    if(w==VK_ESCAPE){ g_quit=1; return 0; }
+    /* Esc quits only when held (1.5 s): a stray press used to close the game. the title shows the countdown */
+    if(w==VK_ESCAPE){
+      if(!(l&(1<<30)) || !g_esc_t0){ g_esc_t0=plat_ns(); char t[300]; snprintf(t,sizeof t,"%s  |  Hold Esc to quit",g_title); SetWindowTextA(h,t); return 0; }
+      if(plat_ns()-g_esc_t0>=1500000000ull){ LOG("window: Esc held, quitting\n"); g_quit=1; }
+      return 0; }
+    if((l&(1<<30)) && (w==VK_F1||w==VK_F3||w==VK_F4||w==VK_F5||w==VK_F7||w==VK_F8||w==VK_F11)) return 0;
     if(w==VK_F11){ set_fullscreen(!g_fullscreen); return 0; }
     if(w==VK_F1){ show_controls(); return 0; }
     if(w==VK_F3){ g_shot_req=1; return 0; }
@@ -286,7 +291,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
       kernel_dump_threads(); gpu_gl_dump_rts(); return 0; }
     if(w==VK_F4){ g_opt_fps= g_opt_fps==0? 1 : 0; char t[64]; snprintf(t,sizeof t,"FPS limit: %s",g_opt_fps==0? "unlimited" : "60"); SetWindowTextA(h,t); { extern void ini_set(const char*, const char*); char v[8]; snprintf(v,sizeof v,"%d",g_opt_fps); ini_set("fps_limit",v); } return 0; }
     keys_held|=keymap(w); return 0;
-  case WM_SYSKEYUP: case WM_KEYUP: keys_held&=~keymap(w); return 0;
+  case WM_SYSKEYUP: case WM_KEYUP: if(w==VK_ESCAPE){ g_esc_t0=0; SetWindowTextA(h,g_title); } keys_held&=~keymap(w); return 0;
   case WM_KILLFOCUS: keys_held=0; ClipCursor(NULL); InterlockedExchange(&g_mouse_dx,0); InterlockedExchange(&g_mouse_dy,0); return 0;
   case WM_INPUT: {
     RAWINPUT raw; UINT size=sizeof raw;
@@ -393,6 +398,7 @@ void video_poll(void){
     }
     rx=(g_mouse_invert&1)?-g_mouse_rx:g_mouse_rx; ry=(g_mouse_invert&2)?-g_mouse_ry:g_mouse_ry;
   }
+  { extern int g_pad_icons_xbox; g_pad_icons_xbox=!g_pad_by_position; }   /* the on-screen button diamonds follow the mapping (gpu_gl.c) */
   if(xget && focused){
     for(DWORD i=0;i<4;i++){ XST s; if(xget(i,&s)) continue; XGP* g=&s.Gamepad; WORD x=g->wButtons;
       /* by label (default): xbox A = A (confirm), B = B, X = X, Y = Y. pad_buttons=1 maps by position like a Switch
@@ -415,7 +421,11 @@ void video_poll(void){
   g_pad.buttons=b; g_pad.lx=lx; g_pad.ly=ly; g_pad.rx=rx; g_pad.ry=ry;
 }
 
+extern volatile u64 g_trace_at_ns;   /* SWR_TRACE_ON_FILE (svc_fs.c): when to take an F5 trace */
 void frontend_frame(void){
+  /* Esc held: checked every frame too, key repeat can be off */
+  if(g_esc_t0 && plat_ns()-g_esc_t0>=1500000000ull && (GetAsyncKeyState(VK_ESCAPE)&0x8000)){ g_esc_t0=0; LOG("window: Esc held, quitting\n"); g_quit=1; }
+  if(g_trace_at_ns && plat_ns()>=g_trace_at_ns){ g_trace_at_ns=0; extern void gpu_gl_dump_rts(void); gpu_gl_dump_rts(); }
   extern u64 gpu_gl_screenshot(const char* path);
   if(g_shot_req){ g_shot_req=0; char p[MAX_PATH]; SYSTEMTIME t; GetLocalTime(&t); CreateDirectoryA("captures",NULL);
     snprintf(p,sizeof p,"captures/screenshot_%04d%02d%02d_%02d%02d%02d",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond); gpu_gl_screenshot(p); }
