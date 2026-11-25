@@ -3127,6 +3127,9 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
      vertices of the other layers */
   int nlay=1; { extern int g_vs_layer_ext; if(g_draw_layered && !g_vs_layer_ext && vpl>=0)
     for(int i=0;i<g_nrt;i++) if(g_rt[i] && g_rt[i]->vol && (int)g_rt[i]->vol->d>nlay) nlay=(int)g_rt[i]->vol->d; }
+  /* SWR_ZALWAYS_FS=<fs hash>: draws with that fragment shader ignore the depth test (finds draws lost to depth) */
+  int zalways=0; { static u64 zfs=1; if(zfs==1){ const char* e=getenv("SWR_ZALWAYS_FS"); zfs= e? strtoull(e,NULL,16) : 0; }
+    if(zfs && fs->hash==zfs && r[0x4B3] && g_zt){ glDepthFunc(GL_ALWAYS); zalways=1; } }
   for(int L_=0;L_<nlay;L_++){
   if(nlay>1){ for(int i=0;i<g_nrt;i++) if(g_rt[i] && g_rt[i]->vol && L_<(int)g_rt[i]->vol->d) glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+i,g_rt[i]->vol->id,0,L_);
     float vt[2]; memcpy(vt,&r[0x280],8); float fl[4]={ (vt[1]<0)!=(origin_flip_h(r)!=0)? -1.f : 1.f, p_clip? 0.f : (float)(r[0x35F]&1), (float)L_, 0 };
@@ -3161,6 +3164,7 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
   if(fs_imgs) glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT|GL_SHADER_IMAGE_ACCESS_BARRIER_BIT|GL_FRAMEBUFFER_BARRIER_BIT);   /* later draws read what SUST wrote */
   }
   if(side_draw){ glDisable(0x8C89); glBindFramebuffer(GL_FRAMEBUFFER,g_fbo); g_fb_sig_ok=0; }
+  if(zalways) glDepthFunc(cmp_func(r[0x4C3]));
   gbuf_writeback();
   /* SWR_DRAW_SYNC=1 (with SWR_NO_GLQ=1): finish every draw and log the slow ones, to find a draw that hangs the gpu */
   { static int ds=-1; if(ds<0) ds= getenv("SWR_DRAW_SYNC")? 1 : 0;

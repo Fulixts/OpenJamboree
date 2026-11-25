@@ -283,6 +283,10 @@ static const char* bop(u32 op, const char* a, const char* b){
   else if(!strcmp(b,"(!true)")){ if(op==0) return "false"; if(op==1||op==2) return a; }                   /* !PT */
   switch(op){ case 0: return T("(%s && %s)",a,b); case 1: return T("(%s || %s)",a,b); case 2: return T("(%s != %s)",a,b); } return a; }
 
+static void set_cmp_cc(Ctx* c, u64 w, const char* t, int bf){
+  if(!B(w,47,1)) return;
+  c->uses_cc=1; emitl(c,"{ bool k_ = %s; cc_z = !k_; cc_s = %s; cc_c = false; }",t,bf? "false" : "k_"); }
+
 /* ============================================================ attributes */
 static char* attr_read_idx(Ctx* c, u32 addr, int is_output, const char* gs_index){
   u32 comp=(addr>>2)&3;
@@ -409,6 +413,29 @@ static u32 bra_target(u64 w, u32 idx){ i32 off=(i32)(B(w,20,24)<<8)>>8; u32 t=(u
   if(t>=10 && (t-10)%4==0) t++;       /* sched control word, skip */
   return t; }
 
+/* the condition code test of a flow instruction (bits 0-4, 15 = always) */
+static u32 flow_cc(u64 w, int id){
+  if(id==O_BRA||id==O_EXIT||id==O_BRK||id==O_CONT||id==O_SYNC||id==O_KIL||id==O_RET) return B(w,0,5);
+  return 15; }
+/* runs always: no predicate and no condition code test */
+static int flow_always(u64 w, int id){ return B(w,16,3)==7 && !B(w,19,1) && flow_cc(w,id)==15; }
+/* condition code test as GLSL. the overflow flag isn't modeled (always clear); same table as yuzu's flow tests */
+static const char* cc_test_expr(Ctx* c, u32 ft){
+  c->uses_cc=1;
+  switch(ft){
+    case 0: return "false";                 case 1: return "(cc_s && !cc_z)";      case 2: return "(!cc_s && cc_z)";
+    case 3: return "(cc_s != cc_z)";        case 4: return "(!cc_s && !cc_z)";     case 5: return "(!cc_z)";
+    case 6: return "(!cc_s)";               case 7: return "(!cc_s || !cc_z)";     case 8: return "(cc_s && cc_z)";
+    case 9: return "cc_s";                  case 10: return "cc_z";                case 11: return "(cc_s || cc_z)";
+    case 12: return "(!cc_s != cc_z)";      case 13: return "(cc_s || !cc_z)";     case 14: return "(!cc_s || cc_z)";
+    case 15: return "true";                 case 16: return "true"; /* OFF: overflow clear */
+    case 17: return "(!cc_c)";              case 18: return "(!cc_s)";             case 19: return "(cc_z || !cc_c)";
+    case 20: return "(cc_c && !cc_z)";      case 21: return "cc_s";                case 22: return "cc_c";
+    case 23: return "false"; /* OFT */      case 28: return "(cc_s || cc_z)";      case 29: return "(!cc_s && !cc_z)";
+    default: { static int said; if(!said){ said=1; LOG("shader: condition code test %u not modeled, taken as always\n",ft); } return "true"; } } }
+/* ISET/FSET .CC (bit 47): flags from the written value (all ones or 1.0f when true, 0 when false) */
+static void set_cmp_cc(Ctx* c, u64 w, const char* t, int bf);
+
 static void unsupported(Ctx* c, const char* name, u64 w){ c->si->unsupported++; if(!c->si->first_unsupported[0]) snprintf(c->si->first_unsupported,64,"%s %016llx",name,(unsigned long long)w); emitl(c,"/* untranslated: %s */",name); }
 
 static void inst(Ctx* c, u32 idx, u64 w, const Op* op);
@@ -416,12 +443,15 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op);
 static void emit_guarded(Ctx* c, u32 idx, u64 w, const Op* op){
   u32 pg=B(w,16,3), pn=B(w,19,1);
   int id=op->id;
-  int is_flow= id==O_BRA||id==O_SYNC||id==O_BRK||id==O_EXIT||id==O_KIL||id==O_CONT||id==O_SSY||id==O_PBK||id==O_PCNT;
   /* SSY/PBK/PCNT/PRET/CAL ignore the predicate field (reads as P0) */
   if(id==O_SSY||id==O_PBK||id==O_PCNT||id==O_PRET||id==O_CAL||id==O_PEXIT){ inst(c,idx,w,op); return; }
   if(pg==7 && pn){ emitl(c,"/* never: %s */",op->name); return; }
-  if(pg==7 || is_flow==2){ inst(c,idx,w,op); return; }
-  emitl(c,"if(%s) {",PN(c,pg,pn)); c->indent++; inst(c,idx,w,op); c->indent--; emitl(c,"}");
+  /* flow instructions also test the condition codes (EXIT CC.NE after an ISET.CC: the tail of a loop) */
+  u32 ft=flow_cc(w,id); const char* cct= ft==15? NULL : cc_test_expr(c,ft);
+  if(cct && !strcmp(cct,"false")){ emitl(c,"/* never (CC): %s */",op->name); return; }
+  if(pg==7 && !cct){ inst(c,idx,w,op); return; }
+  const char* g= pg==7? cct : cct? T("(%s && %s)",PN(c,pg,pn),cct) : PN(c,pg,pn);
+  emitl(c,"if(%s) {",g); c->indent++; inst(c,idx,w,op); c->indent--; emitl(c,"}");
 }
 
 /* emit + label bookkeeping: any rN write kills its label, only instructions without a predicate set one */
@@ -504,6 +534,7 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op){
   case O_FSET_R: case O_FSET_C: case O_FSET_I: {
     char* A=fneg_abs(RF(c,a),B(w,43,1),B(w,54,1)); char* Bv=fneg_abs(opBf(c,w,id-O_FSET_R),B(w,53,1),B(w,44,1));
     const char* t=bop(B(w,45,2),fcmp_expr(B(w,48,4),A,Bv),PN(c,B(w,39,3),B(w,42,1)));
+    set_cmp_cc(c,w,t,B(w,52,1));
     setr(c,d,T("(%s ? %s : 0u)",t,B(w,52,1)? "floatBitsToUint(1.0)" : "0xFFFFFFFFu")); break; }
   case O_FCMP_R: case O_FCMP_RC: case O_FCMP_CR: case O_FCMP_I: {
     char *Bv,*Cv;
@@ -605,6 +636,7 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op){
     setp2(c,B(w,3,3),B(w,0,3),B(w,45,2),t,pc); break; }
   case O_ISET_R: case O_ISET_C: case O_ISET_I: {
     const char* t=bop(B(w,45,2),icmp_expr(B(w,49,3),R(c,a),opB(c,w,id-O_ISET_R),B(w,48,1)),PN(c,B(w,39,3),B(w,42,1)));
+    set_cmp_cc(c,w,t,B(w,44,1));
     setr(c,d,T("(%s ? %s : 0u)",t,B(w,44,1)? "floatBitsToUint(1.0)" : "0xFFFFFFFFu")); break; }
   case O_ICMP_R: case O_ICMP_RC: case O_ICMP_CR: case O_ICMP_I: {
     char *Bv,*Cv;
@@ -1399,7 +1431,7 @@ static int stk_resolve(Ctx* c, u32 n, int fwd, const u32* brx_all, int brx_n){
       if(!IDX_OK(i)) continue;
       if(i!=ldr[L] && is_leader(c,i)){ ok=stk_succ(&A,i-1,i,&s); break; }   /* fall through */
       const Op* op=decode(c->w[i]); if(!op) continue;
-      u64 w=c->w[i]; int id=op->id; u32 pg=B(w,16,3), pn=B(w,19,1); int always= pg==7 && !pn;
+      u64 w=c->w[i]; int id=op->id; u32 pg=B(w,16,3), pn=B(w,19,1); int always=flow_always(w,id);
       int kk= id==O_SSY||id==O_SYNC? 0 : id==O_PBK||id==O_BRK? 1 : 2;
       if(id==O_SSY||id==O_PBK||id==O_PCNT){ if(s.n[kk]>=16){ ok=0; break; } s.s[kk][s.n[kk]++]=bra_target(w,i); continue; }   /* unpredicated */
       if(pg==7 && pn) continue;                                           /* never runs */
@@ -1430,7 +1462,7 @@ static u32 st_jump(Ctx* c, u32 i, const Op* op){
   u32 nx=i+1; while(nx<c->nwords && !IDX_OK(nx)) nx++;
   return t==nx? 0 : t; }                                     /* branch to i+1, no-op */
 
-static int st_uncond(Ctx* c, u32 i){ u64 w=c->w[i]; return B(w,16,3)==7 && !B(w,19,1); }
+static int st_uncond(Ctx* c, u32 i){ u64 w=c->w[i]; const Op* op=decode(w); return op && flow_always(w,op->id); }
 
 /* jt[i]: 0 normal, ~0u becomes 'else', anything else is the same target but closer */
 static int st_check(Ctx* c, u32 n, u32* jt){
@@ -1438,6 +1470,7 @@ static int st_check(Ctx* c, u32 n, u32* jt){
   for(u32 i=11;i<n;i++){ if(!IDX_OK(i)) continue;
     while(sp && S[sp-1].end==i){ if(S[sp-1].els && !S[sp-1].in_else){ S[sp-1].in_else=1; S[sp-1].end=S[sp-1].end2; } else sp--; }
     const Op* op=decode(c->w[i]); if(!op) continue;
+    if(flow_cc(c->w[i],op->id)!=15 && op->id!=O_EXIT && op->id!=O_KIL) return 0;   /* branch on condition codes: pc guards */
     u32 t=st_jump(c,i,op); if(!t) continue; if(t==~0u) return 0;
     if(sp && t>S[sp-1].end){   /* jumps into the current if */
       Iv* tp=&S[sp-1]; u32 e=tp->end, g=e-1; while(g>i && !IDX_OK(g)) g--;
@@ -1528,8 +1561,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si){
     if(!op){ c->si->unsupported++; emitl(c,"/* unknown %016llx */",(unsigned long long)c->w[i]); continue; }
     emit_tracked(c,i,c->w[i],op);
     int id=op->id; u64 w=c->w[i];
-    if(!flow && id==O_EXIT && B(w,16,3)==7 && !B(w,19,1)) exit_end=c->out.n;
-    if(flow && !dead && B(w,16,3)==7 && !B(w,19,1) && (id==O_BRA||id==O_BRX||id==O_SYNC||id==O_BRK||id==O_CONT||id==O_EXIT)){
+    if(!flow && id==O_EXIT && flow_always(w,id)) exit_end=c->out.n;
+    if(flow && !dead && flow_always(w,id) && (id==O_BRA||id==O_BRX||id==O_SYNC||id==O_BRK||id==O_CONT||id==O_EXIT)){
       dead=1; live=c->out; memset(&c->out,0,sizeof c->out); }
   }
   if(dead){ free(c->out.p); c->out=live; }
