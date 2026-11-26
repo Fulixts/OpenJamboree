@@ -676,9 +676,25 @@ static void hle_fn_trace(CPU* RESTRICT c, u64 entry){
 static u64 g_td_lo, g_td_hi, g_td_clo, g_td_chi; static GuestFn* g_td_orig; static u8* g_td_seen;
 static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
   u64 i=(entry-g_td_lo)/4; u64 lr=c->x[30];
-  if(lr>=g_td_clo && lr<g_td_chi && !g_td_seen[i]){ g_td_seen[i]=1;
-    LOG("dyn: %llx from %llx (%llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2]); }
-  g_td_orig[i](c,entry); }
+  int show= lr>=g_td_clo && lr<g_td_chi && g_td_seen[i]<4;
+  if(show){ g_td_seen[i]++;
+    LOG("dyn: %llx from %llx (%llx, %llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2],(unsigned long long)c->x[3]); }
+  /* SWR_DUMP_GRPC=1: the call is grpc_call_start_batch(call, ops, nops, tag): print the initial metadata of the
+     batch (grpc_op is 0x50 bytes, op 0 = SEND_INITIAL_METADATA {count @+16, grpc_metadata* @+24}; grpc_metadata is
+     two 32-byte grpc_slice (refcount==0: inlined length u8 @+8, bytes @+9; else length @+8, bytes* @+16) + 32) */
+  if(show && getenv("SWR_DUMP_GRPC")){
+    u64 ops=c->x[2], nops=c->x[3];   /* CoreCodegen::grpc_call_start_batch(this, call, ops, nops, ...) */
+    for(u64 k=0;k<nops && k<8;k++){ u32 op; memcpy(&op,GP(ops+k*0x50),4); u32 fl; memcpy(&fl,GP(ops+k*0x50+4),4);
+      LOG("grpc: op %u flags %x\n",op,fl);
+      if(op!=0) continue;
+      u64 cnt,md; memcpy(&cnt,GP(ops+k*0x50+16),8); memcpy(&md,GP(ops+k*0x50+24),8);
+      for(u64 m=0;m<cnt && m<32;m++){ char kv[2][200];
+        for(int h=0;h<2;h++){ u64 sl=md+m*96+h*32, rc; memcpy(&rc,GP(sl),8); u64 len; const u8* p;
+          if(!rc){ len=*GP(sl+8); p=GP(sl+9); } else { u64 bp; memcpy(&len,GP(sl+8),8); memcpy(&bp,GP(sl+16),8); p=GP(bp); }
+          int o=0; for(u64 q=0;q<len && o<190;q++){ u8 ch=p[q]; if(ch>=0x20 && ch<0x7F) kv[h][o++]=(char)ch; else o+=snprintf(kv[h]+o,8,"\\x%02x",ch); } kv[h][o]=0; }
+        LOG("grpc:   [%llu] '%s' = '%s'\n",(unsigned long long)m,kv[0],kv[1]); } } }
+  g_td_orig[i](c,entry);
+  if(show) LOG("dyn: %llx returned %llx\n",(unsigned long long)entry,(unsigned long long)c->x[0]); }
 
 static int heap_fn_wanted(const char* nm){
   if(strncmp(nm,"_ZN4sead7ExpHeap",16) && strncmp(nm,"_ZNK4sead7ExpHeap",17)) return 0;

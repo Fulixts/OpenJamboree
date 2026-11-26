@@ -1,3 +1,4 @@
+#include <time.h>
 /* SwitchRecomp - Copyright 2026 MZ Labs
    Licensed under the GNU Affero General Public License v3.0, see LICENSE.txt and NOTICE.txt.
    Forks and derived works have to keep the credit to SwitchRecomp by MZ Labs and the startup screen. */
@@ -545,10 +546,27 @@ static int profile_disp(SvcObj* o, IpcCtx* c){
 
 /* IManagerForApplication, the network service side of a user. there's no NSA on pc so CheckAvailability says "not
    available" (same as yuzu) and the account id is just a fixed non-zero value */
+static int online_on(void);
+/* IAsyncContext of an account request that is already finished: its event is signalled, HasDone says yes, GetResult 0 */
+static int acc_async(SvcObj* o, IpcCtx* c){ (void)o;
+  switch(c->cmd){
+    case 0: { KEvent* e=kevent_new("acc async",0); e->signaled=1; out_copy_h(c,ev_handle(e)); return 0; }   /* GetSystemEvent */
+    case 1: return 0;                                    /* Cancel */
+    case 2: out8(c,1); return 0;                         /* HasDone */
+    case 3: return 0;                                    /* GetResult */
+  }
+  return 0; }
+
 static int accmgr_disp(SvcObj* o, IpcCtx* c){
   switch(c->cmd){
-    case 0: out8(c,0); return 0;                        /* CheckAvailability */
+    case 0: out8(c,(u8)online_on()); return 0;          /* CheckAvailability: yes in online mode */
     case 1: out64(c,0x0123456789ABCDEFull); return 0;   /* GetAccountId */
+    /* online (docs/ONLINE_SPEC.md): the game asks for the network service account's id token before it connects.
+       there is no Nintendo account here, so the request finishes at once and the token is a fixed placeholder that
+       our own server (the host's game) accepts, like OpenSmash's "ssbu-port" token */
+    case 2: LOG("online: id token requested\n"); out_obj(c,svcobj_new("IAsyncContext",acc_async,0)); return 0;   /* EnsureIdTokenCacheAsync */
+    case 3: { u64 a,s; buf_out(c,0,&a,&s); static const char tok[]="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9wZW5qYW1ib3JlZSJ9.eyJpc3MiOiJodHRwczovL2UwZDY3YzUwOWZiMjAzODU4ZWJjYjJmZTNmODhjMmFhLmJhYXMubmludGVuZG8uY29tIiwic3ViIjoiMDEyMzQ1Njc4OWFiY2RlZiIsImF1ZCI6ImVkOWUyZjA1ZDI4NmY3YjgiLCJpYXQiOjE3NjQxMTUyMDAsImV4cCI6NDEwMjQ0NDgwMCwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwidHlwIjoiaWRfdG9rZW4iLCJiczpkaWQiOiI0ZjRhNDE0ZDAxMDIwMzA0IiwibmludGVuZG8iOnsiYWkiOiIwMTAwOTY1MDE3MzM4MDAwIiwiYXAiOiIwMTAwOTY1MDE3MzM4MDAwIiwibmEiOnsiaWQiOiIwMTIzNDU2Nzg5YWJjZGVmIn0sIm5kYyI6IjAiLCJubCI6InB0LUJSIiwicGZjYyI6IkJSIiwibm4iOiJQbGF5ZXIifX0.b3BlbmphbWJvcmVlLWxvY2FsLXNpZ25hdHVyZS0wMDAw";   /* a well-formed JWT (unsigned placeholder): the SDK may decode it */   /* LoadIdTokenCache */
+      u32 n=(u32)sizeof tok-1; if(a && s){ memset(GP(a),0,s); memcpy(GP(a),tok,n<s? n : s); } out32(c,n); return 0; }
   }
   return stub_ok(o,c); }
 
@@ -660,18 +678,40 @@ static int pctl_disp(SvcObj* o, IpcCtx* c){ if(c->cmd==0||c->cmd==1){ out_obj(c,
 
 static SvcObj* new_pctl(void){ return svcobj_new("pctl",pctl_disp,0); }
 
+static void net_trace(const char* who, IpcCtx* c);
+/* online=1 in the .ini (docs/ONLINE_SPEC.md, work in progress): nifm answers "connected" so the game goes on into its
+   online mode, and every call it makes there shows up in the log. off by default: the game stays offline */
+static int online_on(void){ static int v=-1; if(v<0){ extern const char* ini_value(const char*, const char*); v=strcmp(ini_value("online","0"),"0")!=0; if(v) LOG("online: nifm reports a connection (online=1)\n"); } return v; }
 static int nifm_req(SvcObj* o, IpcCtx* c){ (void)o;
-  switch(c->cmd){ case 0: out32(c,1); return 0; case 1: return RC(110,300);
+  if(online_on()) net_trace("nifm IRequest",c);
+  switch(c->cmd){ case 0: out32(c,online_on()? 3 : 1); return 0; case 1: return online_on()? 0 : RC(110,300);
     case 2: { KEvent* a=kevent_new("nifm0",0); KEvent* b=kevent_new("nifm1",0); a->signaled=1; out_copy_h(c,ev_handle(a)); out_copy_h(c,ev_handle(b)); return 0; }
     case 3: case 4: case 5: case 6: case 11: case 21: return 0; }
   return 0; }
 
 static int nifm_gen(SvcObj* o, IpcCtx* c){ (void)o;
-  switch(c->cmd){ case 4: out_obj(c,svcobj_new("IRequest",nifm_req,0)); return 0; case 2: out_obj(c,svcobj_new("IScanRequest",nifm_req,0)); return 0; case 5: return RC(110,300);
+  if(online_on()) net_trace("nifm IGeneralService",c);
+  switch(c->cmd){ case 4: out_obj(c,svcobj_new("IRequest",nifm_req,0)); return 0; case 2: out_obj(c,svcobj_new("IScanRequest",nifm_req,0)); return 0;
+    case 5: { /* GetCurrentNetworkProfile (0x17C, Ryujinx NetworkProfileData): online play reads it before it connects */
+      if(!online_on()) return RC(110,300);
+      extern u32 lan_nifm_ip_nbo(void), lan_nifm_mask_nbo(void); u64 a,s; buf_out(c,0,&a,&s); if(!a || s<0x17C) return RC(110,300);
+      u8* p=GP(a); memset(p,0,0x17C); u32 ip=lan_nifm_ip_nbo(), m=lan_nifm_mask_nbo(), dns=0x08080808u;
+      p[0]=1; memcpy(p+1,&ip,4); memcpy(p+5,&m,4);                 /* IpAddressSetting: dhcp, ip, mask (gateway 0) */
+      p[0xD]=1; memcpy(p+0xE,&dns,4);                              /* DnsSetting */
+      u16 mtu=1500; memcpy(p+0xC0,&mtu,2);
+      for(int i=0;i<16;i++) p[0xC2+i]=(u8)(0x4A+i);               /* Uuid */
+      memcpy(p+0xD2,"OpenJamboree",12);                            /* Name */
+      p[0x116]=12; memcpy(p+0x117,"OpenJamboree",12);              /* WirelessSettingData: ssid */
+      return 0; }
     case 12: { extern u32 lan_nifm_ip_nbo(void); u32 ip=lan_nifm_ip_nbo(); if(!ip) return RC(110,300); out32(c,ip); return 0; }   /* GetCurrentIpAddress, network order */
     case 15: { extern u32 lan_nifm_ip_nbo(void), lan_nifm_mask_nbo(void); u32 ip=lan_nifm_ip_nbo(); if(!ip) return RC(110,300);
       u8 b[0x16]={0}; b[0]=1; memcpy(b+1,&ip,4); u32 m=lan_nifm_mask_nbo(); memcpy(b+5,&m,4); outbytes(c,b,0x16); return 0; }   /* GetCurrentIpConfigInfo */
-    case 18: out32(c,0); return 0; case 21: out8(c,0); return 0; case 22: out8(c,0); return 0; case 1: outbytes(c,"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10",16); return 0; }
+    case 18: if(online_on()){ out8(c,1); out8(c,3); out8(c,4); return 0; } out32(c,0); return 0;   /* GetInternetConnectionStatus: wifi, strength 3, connected */
+    case 21: { /* IsAnyInternetRequestAccepted. "yes" during the boot check sends the SDK down a path the runtime lacks (jump to 0), "no" later
+                  makes the online menu loop back. tracing experiment: no for the first 60 s, then yes (docs/ONLINE_SPEC.md) */
+      static u64 t0; u64 now=plat_ns(); if(!t0) t0=now; static i64 delay=-1; if(delay<0){ extern const char* ini_value(const char*, const char*); delay=atoll(ini_value("online_delay","60")); }
+      int yes= online_on() && now-t0>(u64)delay*1000000000ull; if(yes) LOG("online: internet request accepted\n"); out8(c,(u8)yes); return 0; }
+    case 22: out8(c,0); return 0; case 1: outbytes(c,"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10",16); return 0; }
   return 0; }
 
 static int nifm_disp(SvcObj* o, IpcCtx* c){ if(c->cmd==4||c->cmd==5){ out_obj(c,svcobj_new("IGeneralService",nifm_gen,0)); return 0; } return quiet_ok(o,c); }
@@ -986,7 +1026,9 @@ static SvcObj* new_hwopus(void){ return svcobj_new("hwopus",hwopus_disp,0); }
 
 static void net_trace(const char* who, IpcCtx* c);
 extern int lan_bsd_disp(SvcObj* o, IpcCtx* c);   /* lan.c: the game's sockets on host sockets */
-static int bsd_disp(SvcObj* o, IpcCtx* c){ net_trace("bsd",c); return lan_bsd_disp(o,c); }
+static int bsd_disp(SvcObj* o, IpcCtx* c){ net_trace("bsd",c); int r=lan_bsd_disp(o,c);
+  if(c->out_size>=8 && c->cmd){ i32 ret; u32 er; memcpy(&ret,c->out,4); memcpy(&er,c->out+4,4); LOG("lan: bsd cmd %u -> %d errno %u\n",c->cmd,ret,er); }
+  return r; }
 
 static SvcObj* new_bsd(void){ return svcobj_new("bsd",bsd_disp,0); }
 
@@ -1155,6 +1197,36 @@ static int ldn_disp(SvcObj* o, IpcCtx* c){ net_trace("ldn:u",c); (void)ldn_user;
 
 static SvcObj* new_ldn(void){ return svcobj_new("ldn:u",ldn_disp,0); }
 
+/* nsd (network service discovery): the environment is "lp1" (production), and a "%" in a server name stands for it,
+   as on a retail console. online play (docs/ONLINE_SPEC.md) builds its server names from this */
+static void nsd_resolve(const char* in, char* out, int n){ int o=0; for(int i=0;in[i] && o<n-4;i++){ if(in[i]=='%'){ memcpy(out+o,"lp1",3); o+=3; } else out[o++]=in[i]; } out[o]=0; }
+static int nsd_disp(SvcObj* o, IpcCtx* c){ (void)o; u64 a,s,b,bs;
+  switch(c->cmd){
+    case 10: buf_out(c,0,&a,&s); if(a && s){ memset(GP(a),0,s); memcpy(GP(a),"lp1",s<3? s : 3); } return 0;        /* GetSettingName */
+    case 11: { char e[8]={'l','p','1',0,0,0,0,0}; outbytes(c,e,8); return 0; }                                        /* GetEnvironmentIdentifier */
+    case 12: { u8 id[16]={0x4f,0x4a,0x41,0x4d,1,2,3,4,5,6,7,8,9,10,11,12}; outbytes(c,id,16); return 0; }           /* GetDeviceId */
+    case 20: case 21: { buf_in(c,0,&a,&s); buf_out(c,0,&b,&bs); char in[0x101]={0}, out[0x100];                      /* Resolve, ResolveEx */
+      if(a && s) memcpy(in,GP(a),s<0x100? s : 0x100); nsd_resolve(in,out,sizeof out);
+      if(b && bs){ memset(GP(b),0,bs); memcpy(GP(b),out,strlen(out)<bs? strlen(out) : bs); }
+      LOG("online: nsd resolve %s -> %s\n",in,out); if(c->cmd==21) out32(c,0); return 0; }
+  }
+  return 0; }
+static SvcObj* new_nsd(void){ return svcobj_new("nsd",nsd_disp,0); }
+
+/* ntc: the network clock. online play waits for it to be "available"; here the task ends at once and the server
+   time is the PC's (docs/ONLINE_SPEC.md) */
+static int ntc_task(SvcObj* o, IpcCtx* c){ (void)o;
+  switch(c->cmd){
+    case 1: { KEvent* e=kevent_new("ntc done",0); e->signaled=1; out_copy_h(c,ev_handle(e)); return 0; }   /* GetFinishNotificationEvent */
+    case 4: out8(c,0); return 0;                                                                            /* IsProcessing */
+    case 5: out64(c,(u64)time(NULL)); return 0;                                                             /* GetServerTime */
+  }
+  return 0; }   /* 0 StartTask, 2 GetResult, 3 Cancel */
+static int ntc_disp(SvcObj* o, IpcCtx* c){ (void)o; if(c->cmd==0){ out_obj(c,svcobj_new("IEnsureNetworkClockAvailabilityService",ntc_task,0)); return 0; } return 0; }
+static SvcObj* new_ntc(void){ return svcobj_new("ntc",ntc_disp,0); }
+extern int lan_sfdnsres_disp(SvcObj* o, IpcCtx* c);
+static SvcObj* new_sfdnsres(void){ return svcobj_new("sfdnsres",lan_sfdnsres_disp,0); }
+
 static int ectx_disp(SvcObj* o, IpcCtx* c){ (void)o; (void)c; return 0; }
 
 static SvcObj* new_ectx(void){ return svcobj_new("ectx:aw",ectx_disp,0); }
@@ -1209,5 +1281,5 @@ void svc_core_init(void){
   svc_register("fatal:u",new_fatal); svc_register("csrng",new_csrng); svc_register("mm:u",new_mm);
   svc_register("nfp:user",new_nfp); svc_register("nfc:user",new_nfp); svc_register("caps:u",new_caps); svc_register("caps:a",new_caps); svc_register("caps:su",new_caps); svc_register("caps:ss",new_caps);
   svc_register("bcat:u",new_bcat); svc_register("bcat:a",new_bcat); svc_register("aoc:u",new_aoc); svc_register("irs",new_irs);
-  svc_register("mii:e",new_mii); svc_register("mii:u",new_mii); svc_register("ldn:u",new_ldn); svc_register("ectx:aw",new_ectx); svc_register("spl:",new_spl); svc_register("spl:mig",new_spl); svc_register("ngc:u",new_ngc);
+  svc_register("mii:e",new_mii); svc_register("mii:u",new_mii); svc_register("ldn:u",new_ldn); svc_register("ectx:aw",new_ectx); svc_register("spl:",new_spl); svc_register("spl:mig",new_spl); svc_register("ngc:u",new_ngc); svc_register("nsd:u",new_nsd); svc_register("ntc",new_ntc); svc_register("sfdnsres",new_sfdnsres); svc_register("nsd:a",new_nsd);
 }

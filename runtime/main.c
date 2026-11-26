@@ -262,6 +262,8 @@ static const IniOpt INI_FG[]={
 
 static const IniOpt INI_LAN[]={
   {"lan_interface","","Network for local wireless play (LAN or ZeroTier): the IP of the adapter to use, e.g. 10.147.17.5.\n;   Empty = a ZeroTier adapter if there is one, else the one with internet. The Esc menu lists them"},
+  {"online","0","Work in progress (docs/ONLINE_SPEC.md): 1 = tell the game it is online so its online mode can be traced. Leave 0"},
+  {"online_host","","Online play: the ZeroTier IP of the player who hosts (their game plays Nintendo's servers). Empty = this PC hosts"},
   {"lan_peers","","Other PCs that also get every room announcement as unicast, separated by commas (VPNs without broadcast,\n;   or 127.0.0.2 to test two copies of the game on one PC with lan_interface=127.0.0.1)"},
   {NULL,NULL,NULL}};
 

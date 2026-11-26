@@ -452,10 +452,10 @@ void lan_status(char* out, int n){
 
 /* ============================================================ bsd:u (docs/LAN_SPEC.md 3) */
 #define NFD 64
-static struct { SOCKET s; int type, nonblock, bound; } g_fd[NFD];
+static struct { SOCKET s, w; int type, nonblock, bound; } g_fd[NFD];   /* type 3 = eventfd: s reads, w writes (a connected UDP pair) */
 static PMutex g_fdlk; static int g_fdinit;
 
-static void fd_init(void){ if(!g_fdinit){ pm_init(&g_fdlk); for(int i=0;i<NFD;i++) g_fd[i].s=INVALID_SOCKET; g_fdinit=1; net_startup(); } }
+static void fd_init(void){ if(!g_fdinit){ pm_init(&g_fdlk); for(int i=0;i<NFD;i++) g_fd[i].s=g_fd[i].w=INVALID_SOCKET; g_fdinit=1; net_startup(); } }
 static int fd_ok(u32 fd){ return fd<NFD && g_fd[fd].s!=INVALID_SOCKET; }
 
 /* host error -> Linux errno */
@@ -581,6 +581,10 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       bsd_ret(c,r<0? -1 : r,r<0? 22 : 0); return 0; }
     case 8: case 25: {
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
+      if(g_fd[fd].type==3){ buf_out(c,0,&a,&s); u64 sum=0, v; int got=0;
+        if(!g_fd[fd].nonblock){ fd_set rs; FD_ZERO(&rs); FD_SET(g_fd[fd].s,&rs); select((int)g_fd[fd].s+1,&rs,NULL,NULL,NULL); }
+        sock_nonblock(g_fd[fd].s,1); while(recv(g_fd[fd].s,(char*)&v,8,0)==8){ sum+=v; got=1; } sock_nonblock(g_fd[fd].s,0);
+        if(!got){ bsd_ret(c,-1,11); return 0; } if(a && s>=8) memcpy(GP(a),&sum,8); bsd_ret(c,8,0); return 0; }
       u32 fl= c->cmd==8? in32(c,4) : 0; buf_out(c,0,&a,&s); int t=one_call_nonblock(fd,fl);
       int r=recv(g_fd[fd].s,(char*)GP(a),(int)s,host_flags(fl)); restore_block(fd,t);
       if(r<0) bsd_fail(c,0); else bsd_ret(c,r,0); return 0; }
@@ -593,6 +597,7 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       sa_out(b,bs,&from); bsd_ret(c,r,0); out32(c,b? 16 : 0); return 0; }
     case 10: case 24: {
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
+      if(g_fd[fd].type==3){ buf_in(c,0,&a,&s); u64 v=0; if(a && s>=8) memcpy(&v,GP(a),8); send(g_fd[fd].w,(const char*)&v,8,0); bsd_ret(c,8,0); return 0; }
       u32 fl= c->cmd==10? in32(c,4) : 0; buf_in(c,0,&a,&s); pin(fd); int t=one_call_nonblock(fd,fl);
       int r=send(g_fd[fd].s,(const char*)GP(a),(int)s,host_flags(fl)); restore_block(fd,t);
       if(r<0) bsd_fail(c,0); else bsd_ret(c,r,0); return 0; }
@@ -676,8 +681,22 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
     case 23: bsd_ret(c,0,0); return 0;
     case 26: {
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
-      pm_lock(&g_fdlk); CLOSESOCK(g_fd[fd].s); g_fd[fd].s=INVALID_SOCKET; pm_unlock(&g_fdlk);
+      pm_lock(&g_fdlk); CLOSESOCK(g_fd[fd].s); g_fd[fd].s=INVALID_SOCKET; if(g_fd[fd].type==3 && g_fd[fd].w!=INVALID_SOCKET) CLOSESOCK(g_fd[fd].w); g_fd[fd].w=INVALID_SOCKET; pm_unlock(&g_fdlk);
       bsd_ret(c,0,0); return 0; }
+    case 31: {
+      /* EventFd (gRPC's wakeup fd): a counter that is readable while non-zero. here a pair of connected loopback UDP
+         sockets: a write sends the 8-byte value, a read drains every datagram and returns their sum */
+      u64 init=in64(c,8); u32 fl=in32(c,0);
+      SOCKET r=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP), w=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+      struct sockaddr_in a={0}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(0x7F000001); socklen_t al=sizeof a;
+      if(r==INVALID_SOCKET || w==INVALID_SOCKET || bind(r,(struct sockaddr*)&a,sizeof a) || getsockname(r,(struct sockaddr*)&a,&al) || connect(w,(struct sockaddr*)&a,sizeof a)){
+        if(r!=INVALID_SOCKET) CLOSESOCK(r); if(w!=INVALID_SOCKET) CLOSESOCK(w); bsd_fail(c,0); return 0; }
+      sock_quiet_udp(r); sock_quiet_udp(w);
+      pm_lock(&g_fdlk); int f=-1; for(int i=3;i<NFD && f<0;i++) if(g_fd[i].s==INVALID_SOCKET) f=i;
+      if(f<0){ pm_unlock(&g_fdlk); CLOSESOCK(r); CLOSESOCK(w); bsd_ret(c,-1,24); return 0; }
+      g_fd[f].s=r; g_fd[f].w=w; g_fd[f].type=3; g_fd[f].nonblock=(fl&0x800)!=0 || (fl&4)!=0; g_fd[f].bound=1; pm_unlock(&g_fdlk);
+      if(init) send(w,(const char*)&init,8,0);
+      LOG("lan: eventfd %d\n",f); bsd_ret(c,f,0); return 0; }
     case 7: case 29: case 30: bsd_ret(c,-1,95); return 0;
   }
   { static int said; if(said<20){ said++; LOG("lan: bsd cmd %u not handled\n",c->cmd); } }
@@ -692,3 +711,54 @@ int lan_menu_ifaces(char labels[][128], char ips[][20], int max){
   NetIf l[32]; int n=lan_list_ifaces(l,32); if(n>max) n=max;
   for(int i=0;i<n;i++){ ip_str(l[i].ip,ips[i]); snprintf(labels[i],128,"%s%s (%s)",l[i].zt? "ZeroTier: " : "",l[i].name,ips[i]); }
   return n; }
+
+/* ============================================================ sfdnsres: DNS for online play (docs/ONLINE_SPEC.md)
+   every *.nintendo.net name points at the host's game (online_host= in the .ini, empty = this PC), which plays
+   Nintendo's servers for everyone on the ZeroTier network; any other name uses the PC's own DNS. answers use the
+   packed addrinfo of the real service: big-endian header 0xBEEFCAFE, then the address as Ryujinx writes it */
+static u32 online_host_ip(void){ const char* h=ini_value("online_host",""); u32 ip= *h? parse_ip(h) : 0; return ip? ip : (lan_ip()? lan_ip() : 0x7F000001u); }
+
+static void be32w(u8* p, u32 v){ p[0]=(u8)(v>>24); p[1]=(u8)(v>>16); p[2]=(u8)(v>>8); p[3]=(u8)v; }
+
+static u32 addrinfo_pack(u8* out, u64 cap, const char* name, u32* ips, int n, u16 port){
+  u64 o=0; size_t nl=strlen(name)+1;
+  for(int i=0;i<n;i++){
+    if(o+24+16+nl+4>cap) break;
+    be32w(out+o,0xBEEFCAFEu); be32w(out+o+4,0); be32w(out+o+8,2); be32w(out+o+12,0); be32w(out+o+16,0); be32w(out+o+20,16); o+=24;
+    u8* a=out+o; memset(a,0,16); a[0]=4; a[1]=2; memcpy(a+2,&port,2);
+    a[4]=(u8)ips[i]; a[5]=(u8)(ips[i]>>8); a[6]=(u8)(ips[i]>>16); a[7]=(u8)(ips[i]>>24); o+=16;
+    memcpy(out+o,name,nl); o+=nl; }
+  memset(out+o,0,4); o+=4;
+  return (u32)o; }
+
+static int resolve_name(const char* name, u32* ips, int max){
+  if(strstr(name,"nintendo.net") || strstr(name,"nintendo.com")){ ips[0]=online_host_ip(); return 1; }
+  struct addrinfo h={0},*r=NULL; h.ai_family=AF_INET;
+  if(getaddrinfo(name,NULL,&h,&r) || !r) return 0;
+  int n=0; for(struct addrinfo* p=r;p && n<max;p=p->ai_next) ips[n++]=ntohl(((struct sockaddr_in*)p->ai_addr)->sin_addr.s_addr);
+  freeaddrinfo(r); return n; }
+
+int lan_sfdnsres_disp(SvcObj* o, IpcCtx* c){ (void)o;
+  net_startup();
+  u64 a,s,b,bs,out,os;
+  switch(c->cmd){
+    case 6: case 12: {
+      buf_in(c,0,&a,&s); buf_in(c,1,&b,&bs);
+      char name[256]={0}, svc[64]={0}; if(a && s) memcpy(name,GP(a),s<255? s : 255); if(b && bs) memcpy(svc,GP(b),bs<63? bs : 63);
+      buf_out(c,0,&out,&os);
+      u32 ips[8]; int n=resolve_name(name,ips,8); u16 port=(u16)atoi(svc);
+      char ipt[20]="-"; if(n) ip_str(ips[0],ipt);
+      LOG("online: dns %s -> %s\n",name,ipt);
+      u32 size= (n && out && os)? addrinfo_pack(GP(out),os,name,ips,n,port) : 0;
+      int netdb= n? 0 : 1, gai= n? 0 : 7;   /* HOST_NOT_FOUND, EAI_NONAME-ish */
+      if(c->cmd==12){ out32(c,size); out32(c,(u32)gai); out32(c,(u32)netdb); out32(c,0); }
+      else { out32(c,(u32)netdb); out32(c,(u32)gai); out32(c,size); }
+      return 0; }
+    case 2: case 10: {   /* GetHostByName: not used by the traced paths yet */
+      buf_in(c,0,&a,&s); char name[256]={0}; if(a && s) memcpy(name,GP(a),s<255? s : 255);
+      LOG("online: gethostbyname %s (not answered)\n",name);
+      if(c->cmd==10){ out32(c,0); out32(c,1); out32(c,0); out32(c,0); } else { out32(c,1); out32(c,0); out32(c,0); }
+      return 0; }
+    case 8: out32(c,0); return 0;   /* GetCancelHandleRequest */
+  }
+  return 0; }
