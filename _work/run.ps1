@@ -1,5 +1,7 @@
-param([int]$Seconds=40, [string]$ShotList="10,20,30,40", [string]$Tag="run", [string]$Keys="")
+param([int]$Seconds=40, [string]$ShotList="10,20,30,40", [string]$Tag="run", [string]$Keys="", [switch]$Foreground)
 # Launches the game, takes screenshots of its window at the given times, then kills it.
+# By default the game runs in background mode (SWR_BACKGROUND=1): off-screen, never focused, muted, the real pad
+# and keyboard ignored, so a test does not disturb someone using the PC. -Foreground shows the window as usual.
 $ErrorActionPreference = "Stop"
 $Shots = @($ShotList.Split(",") | ForEach-Object { [int]$_ })
 $root = Split-Path -Parent $PSScriptRoot   # the Switch2Recomp folder
@@ -21,6 +23,7 @@ public class W {
 [W]::SetProcessDPIAware() | Out-Null
 Get-Process Recomp -ErrorAction SilentlyContinue | Stop-Process -Force
 $env:SWR_INPUT_UNFOCUSED = "1"   # keys count even if Windows keeps another window in front
+$env:SWR_BACKGROUND = if($Foreground){ "" } else { "1" }
 $p = Start-Process -FilePath "$game\Recomp.exe" -WorkingDirectory $game -PassThru
 $t0 = Get-Date
 # Keys: "time:vk,time:vk" e.g. "25:0x0D,27:0x58"  (vk codes)
@@ -36,7 +39,7 @@ while(((Get-Date)-$t0).TotalSeconds -lt $Seconds){
     # "vk+vk@ms": keys pressed together, held for ms (default 200)
     $spec=$keyEvents[$keyIdx][1].Split('@'); $hold= if($spec.Count -gt 1){ [int]$spec[1] } else { 200 }
     $vks=@($spec[0].Split('+') | ForEach-Object { [Convert]::ToInt32($_,16) }); $vk=$keyEvents[$keyIdx][1]
-    if($h -ne 0){ [W]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 100
+    if($h -ne 0){ if($Foreground){ [W]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 100 }
       foreach($v in $vks){ $sc=[W]::MapVirtualKey($v,0); [W]::PostMessage($h,0x100,[IntPtr]$v,[IntPtr](1 -bor ($sc -shl 16))) | Out-Null }
       Start-Sleep -Milliseconds $hold
       foreach($v in $vks){ $sc=[W]::MapVirtualKey($v,0); [W]::PostMessage($h,0x101,[IntPtr]$v,[IntPtr]([int64]0xC0000001 -bor ($sc -shl 16))) | Out-Null } }

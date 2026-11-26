@@ -88,6 +88,9 @@ static void host_write(const float* samples,unsigned frames){
 #endif
   host_gain=swr_audio_gain(samples,frames,host_gain);
   for(unsigned i=0;i<frames*2;i++){ float x=samples[i]*host_gain; if(!isfinite(x)) x=0; if(x>1) x=1; if(x< -1) x=-1; dst[i]=(i16)lrintf(x*32767); }
+  /* SWR_BACKGROUND=1 / SWR_MUTE=1: silence, but still through the device so the game's audio timing stays the same */
+  { static int mute=-1; if(mute<0){ const char* b=getenv("SWR_BACKGROUND"); const char* m=getenv("SWR_MUTE"); mute= (b && *b=='1') || (m && *m=='1'); }
+    if(mute) memset(dst,0,frames*4); }
 #if defined(_WIN32)
   h->dwBufferLength=frames*4; MMRESULT r;
   unsigned errors=0;
