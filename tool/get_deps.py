@@ -3,7 +3,7 @@
 # Forks and derived works have to keep the credit to SwitchRecomp by MZ Labs and the startup screen.
 # downloads what SwitchRecomp needs and doesn't come in the package, into the SwitchRecomp folder (no admin, no
 # password, nothing installed on the system): GCC from conda-forge into gcc/, and on linux SDL2 into lib/ (from the
-# pysdl2-dll wheel on PyPI). started by Install.bat (windows, after it got python) or Install.sh (linux).
+# pysdl2-dll wheel on PyPI). started by setup.py (windows, after it got python) or setup.py (linux).
 #   get_deps.py           everything that's missing
 #   get_deps.py gcc|sdl   only that
 import hashlib, io, json, os, shutil, sys, tarfile, tempfile, time, urllib.request, zipfile

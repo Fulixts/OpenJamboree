@@ -3,6 +3,9 @@
    Forks and derived works have to keep the credit to SwitchRecomp by MZ Labs and the startup screen. */
 /* What the NVN layer (runtime/nvn, renderer=vulkan) expects from the runtime around it: frame pacing, timing and a
    few debug hooks. The debug ones (watchpoints, breakpoints, trace spans, flight recorder) do nothing here. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* pthread_setname_np on glibc */
+#endif
 #include "rt.h"
 #ifdef _WIN32
 #include <windows.h>

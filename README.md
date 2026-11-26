@@ -15,7 +15,7 @@
 > - **Texture cache on disk**: ASTC textures converted for the PC are kept, so loads are much shorter from the second time.
 >
 > Next: **LAN play** (local wireless / LDN over the network, e.g. ZeroTier) and **mods** (romfs layers).
-> Development happens on `main`; build steps below are the same, pointed at a 2.3.0 dump.
+> Development happens on `main`, built by CI on Windows and Linux ([`build.yml`](.github/workflows/build.yml)).
 
 An unofficial native PC port of **Super Mario Party Jamboree** (Nintendo Switch, v1.1.0) made by static
 recompilation. The game's ARM64 code is translated to C and compiled into a Windows module on your own PC; a runtime
@@ -46,18 +46,28 @@ Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT
 
 ## What you need
 
-- Windows 10/11 x64, a GPU with OpenGL 4.6 (tested on an NVIDIA RTX 4060 Ti).
+- Windows 10/11 x64 or Linux x86_64, a GPU with OpenGL 4.3+ (tested on NVIDIA RTX 4060 Ti and RTX 3060).
 - Your own Super Mario Party Jamboree with the 1.1.0 update, dumped from your own Switch, with `exefs/` and `romfs/`
   extracted using your own keys.
 
 ## Setup
 
-1. Run `Install.bat` once. It downloads Python and GCC (hash-checked) into this folder. Then run
-   `python\python.exe _work\get_gxx.py` to add the C++ compiler the runtime needs, and build the runtime with
-   `python\python.exe switchrecomp.py --build-runtime`.
-2. Recompile your dump without copying it: `python switchrecomp.py <path to your dump> --link`. This builds
-   `games/<Game>.exe` and `games/<Game>_code.dll` on your PC and writes `game_dump=` into `games/<Game>.ini`.
-3. Start `games/<Game>.exe`. If it can't find the dump it asks for the folder and checks that it's the right game.
+The easy way: the **Recomp Launcher** (download a release, Easy Setup asks for the files below).
+
+By hand, on Windows or Linux (Python 3.9+; Linux also needs its build packages, see [`docs/PLATFORMS.md`](docs/PLATFORMS.md)):
+
+```
+python setup.py
+python launcher/prepare.py --keys prod.keys --base <base game>.nsp --update <update 2.3.0>.nsp
+```
+
+1. `setup.py` gets the compiler and libraries for your system and builds the runtime. Nothing goes on the system.
+2. `prepare.py` unpacks your NSPs with your keys into `data/dump`, checks that it is the 2.3.0 code, recompiles it
+   (10 to 30 minutes the first time) and makes the 1 second opening for "skip intro".
+3. Start `games/SuperMarioPartyJamboree.exe` (Linux: `games/SuperMarioPartyJamboree`).
+
+Already have `exefs/` and `romfs/` extracted? `python switchrecomp.py <that folder> --link` recompiles it directly.
+macOS is not supported yet: [`docs/PLATFORMS.md`](docs/PLATFORMS.md) explains why and what it would take.
 
 Saves go to `games/<Game>_data/save/`. Controls and options: [`README.txt`](README.txt) (F1 in game shows the keys).
 Keyboard: arrows = D-pad, WASD = left stick, X/Space = A, Z = B, C = X, V = Y, Q = L, E = R, Enter = +, Backspace = -.

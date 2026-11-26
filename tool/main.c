@@ -655,9 +655,9 @@ static int job_start(const char *src)
         if (file_exists(ib) && (INT_PTR)ShellExecuteA(NULL, "open", ib, NULL, app.here, SW_SHOWNORMAL) > 32)
             job_line("Python is not installed yet: Install.bat is downloading it (and GCC) in another window. Recompile again when it says All done.");
         else
-            job_line("Python 3 was not found. Double-click Install.bat (needs internet) or install Python from python.org.");
+            job_line("Python 3 was not found. Install Python from python.org, then run python setup.py.");
 #else
-        job_line("Python 3 was not found. Double-click Install.sh (needs internet) or install python3 with your package manager.");
+        job_line("Python 3 was not found. Install python3 with your package manager, then run python3 setup.py.");
 #endif
         J.finished = 1;
         return 0;
@@ -682,7 +682,7 @@ static int job_start(const char *src)
         }
     }
     if (!lcc) {
-        job_line("No C compiler found. Double-click Install.sh in the SwitchRecomp folder (needs internet), then Recompile.");
+        job_line("No C compiler found. Run python3 setup.py in this folder (needs internet), then Recompile.");
         J.finished = 1;
         return 0;
     }
@@ -718,7 +718,7 @@ static int job_start(const char *src)
     snprintf(cc, sizeof cc, "%sgcc\\Library\\bin\\x86_64-w64-mingw32-gcc.exe", app.here);
     if (gcc && !file_exists(cc)) {
         /* GCC is a separate download, building with TCC is better than not building at all */
-        job_line("GCC is not installed: using TCC. Double-click Install.bat (needs internet) and use Recompile for a faster game.");
+        job_line("GCC is not installed: using TCC. Run python setup.py (needs internet) and use Recompile for a faster game.");
         gcc = 0;
     }
     if (!gcc) snprintf(cc, sizeof cc, "%stcc\\tcc.exe", app.here);

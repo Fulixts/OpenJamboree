@@ -1,0 +1,113 @@
+# OpenJamboree CI: checks the scripts and the launcher manifest, builds the runtime and the NSP extractor on Windows
+# and Linux, and packages the Recomp Launcher releases. No game files exist here: the game itself is only ever
+# recompiled on a player's PC from their own dump. A pushed tag v* publishes the packages as a GitHub release.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.14' }
+      - name: Python compiles
+        run: python -m compileall -q setup.py switchrecomp.py codegen.py a64.py nxloader.py launcher tool/get_deps.py
+      - name: recomplauncher.json matches the launcher's schema
+        run: |
+          pip install -q jsonschema
+          curl -fsSL https://recomplauncher.com/schema/recomplauncher.json -o /tmp/schema.json
+          python -c "import json,jsonschema; jsonschema.Draft7Validator(json.load(open('/tmp/schema.json'))).validate(json.load(open('recomplauncher.json'))); print('ok')"
+      - name: Intro trimmer on a synthetic movie
+        run: python tools/ci/test_trim_intro.py
+      - name: No game files or keys tracked
+        run: |
+          if git ls-files | grep -iE '\.(nsp|nsz|xci|nca|nso|nro|keys|bfres|bntx)$|(^|/)(exefs|romfs)/'; then
+            echo "game files are tracked"; exit 1; fi
+
+  windows:
+    needs: check
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.14' }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '10.0.x' }
+      - uses: actions/cache@v4
+        with:
+          path: |
+            gcc
+            python
+          key: win-toolchain-${{ hashFiles('tool/get_deps.py', 'setup.py') }}
+      - name: Toolchain and runtime (setup.py)
+        run: python setup.py --python
+      - name: Package (Recomp Launcher zip)
+        shell: pwsh
+        run: |
+          $v = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "0.0.0-ci.$env:GITHUB_RUN_NUMBER" }
+          ./launcher/make_release.ps1 -Version $v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            bin/runtime_win64_win32.exe
+
+  linux:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '10.0.x' }
+      - name: Build packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential cmake git nasm libx11-dev libgl-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            runtime/oh264/lin
+            runtime/opus/lin
+          key: linux-libs-${{ hashFiles('tools/build_linux_libs.sh') }}
+      - name: Libraries and runtime (setup.py)
+        run: python3 setup.py
+      - name: Package (Recomp Launcher tar.xz)
+        run: |
+          v=$([ "$GITHUB_REF_TYPE" = tag ] && echo "${GITHUB_REF_NAME#v}" || echo "0.0.0-ci.$GITHUB_RUN_NUMBER")
+          bash launcher/make_release.sh "$v"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.xz
+            bin/runtime_linux_x11
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out }
+      - name: GitHub release with the launcher packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "OpenJamboree $GITHUB_REF_NAME" \
+            --notes "Builds Super Mario Party Jamboree 2.3.0 from your own dump. Recomp Launcher: pick the base .nsp, the 2.3.0 update .nsp and your prod.keys." \
+            out/windows/dist/*.zip out/linux/dist/*.tar.xz

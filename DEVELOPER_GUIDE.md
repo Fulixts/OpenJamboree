@@ -11,7 +11,7 @@ Rules of the project:
 - No code from GPL-2.0-only or other incompatible projects. yuzu, Eden and similar emulators may be read to understand
   hardware behavior, but their code is not copied.
 - Every source file keeps the header `SwitchRecomp - Copyright 2026 MZ Labs` (AGPL v3 with NOTICE.txt).
-- Packages stay under 20 MB. Python, GCC and SDL2 are downloaded by `Install.bat` / `Install.sh`, not shipped.
+- Packages stay under 20 MB. Python, GCC and SDL2 are downloaded by `setup.py` / `setup.py`, not shipped.
 - A fix is not done until it is explained by a mechanism (log, trace or replay), not by trial and error.
 
 ---
@@ -37,7 +37,7 @@ sudo apt install build-essential gcc python3 \
 
 ### Windows
 
-Run `Install.bat`. It downloads Python 3.14 (NuGet) and GCC (conda-forge) into the SwitchRecomp folder and checks
+Run `setup.py`. It downloads Python 3.14 (NuGet) and GCC (conda-forge) into the SwitchRecomp folder and checks
 each download against its SHA-256. `tool/get_deps.py` holds the pinned URLs and hashes.
 
 ---

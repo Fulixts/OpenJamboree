@@ -1,6 +1,6 @@
 """Where Switch2Recomp's tools find GCC, Python and the outside dependencies, on any PC.
 
-Looked for in this order: inside the repository (as Install.bat and tools/get_external.py put them: gcc/, python/, external/),
+Looked for in this order: inside the repository (as setup.py and tools/get_external.py put them: gcc/, python/, external/),
 then beside it (../gcc, ../SwitchRecomp/python, ../external: an older layout), then the PATH and the Vulkan SDK (%VULKAN_SDK%).
 S2R_EXTERNAL picks another external folder. Every tool imports this instead of naming a folder of its own."""
 import os, shutil, sys
@@ -34,7 +34,7 @@ def gcc_tool(name):
 
 
 def python():
-    """The Python that builds games: the one Install.bat downloads, else this one."""
+    """The Python that builds games: the one setup.py downloads, else this one."""
     return _first(os.path.join(ROOT, 'python', 'python.exe'), os.path.join(PARENT, 'SwitchRecomp', 'python', 'python.exe')) or sys.executable
 
 
@@ -66,6 +66,6 @@ def env_with_gcc(env=None):
 
 if __name__ == '__main__':   # python tools/s2r_paths.py: what this PC has
     print('repository  ', ROOT); print('external    ', EXTERNAL, '(found)' if os.path.isdir(EXTERNAL) else '(missing: python tools/get_external.py)')
-    print('GCC         ', gcc_bin() or 'missing: run Install.bat'); print('Python      ', python())
+    print('GCC         ', gcc_bin() or 'missing: run setup.py'); print('Python      ', python())
     print('glslang     ', glslang() or 'missing: install the Vulkan SDK'); print('Vulkan headers', vulkan_include() or 'missing: install the Vulkan SDK')
     for t in ('spirv-val', 'spirv-opt'): print('%-12s' % t, spirv_tool(t) or 'missing: install the Vulkan SDK')

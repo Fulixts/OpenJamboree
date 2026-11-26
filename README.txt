@@ -19,9 +19,9 @@ notice) that the recompiler and every recompiled game show when they start.
 --------------------------------------------------------------------------------
 1) RECOMPILE A GAME
 --------------------------------------------------------------------------------
-  First double-click Install.bat once (needs internet, no admin rights): it downloads Python
+  First double-click setup.py once (needs internet, no admin rights): it downloads Python
   (python\) and GCC (gcc\) into this folder. TCC comes in the package. If you forget, the
-  recompiler opens Install.bat by itself the first time you recompile.
+  recompiler opens setup.py by itself the first time you recompile.
 
   a) Dump the game from your own console and extract it with hactool and your
      own keys:
@@ -51,7 +51,7 @@ notice) that the recompiler and every recompiled game show when they start.
                        Games folder      Settings (compiler, theme)   Close
      - Compiler (Settings):  GCC  takes longer to compile, the game runs faster
                              TCC  compiles in seconds, the game runs slower
-       GCC comes from Install.bat (gcc\ folder). Without it TCC is used.
+       GCC comes from setup.py (gcc\ folder). Without it TCC is used.
 
   Command line:
      python\python.exe switchrecomp.py C:\path\to\game -o MyGame
@@ -98,7 +98,7 @@ notice) that the recompiler and every recompiled game show when they start.
     renderer=opengl        opengl (default), vulkan, or eden (Eden's Vulkan GPU)
 
   renderer=vulkan translates the game's shaders while it runs. It needs
-  Python 3 (Install.bat downloads it) and the .NET 10 runtime
+  Python 3 (setup.py downloads it) and the .NET 10 runtime
   (https://dotnet.microsoft.com/download/dotnet/10.0). The first time a
   shader is used it appears about a second and a half later; after that it
   comes from <game>_nvn\cache. On Linux it also needs, once:
@@ -127,9 +127,9 @@ Third-party components
   SPIRV-Cross (Khronos, Apache 2.0)     LSFG shaders  runtime\spvc\LICENSE-SPIRV-Cross.txt
   texture2ddecoder (MIT)                BCn textures  runtime\bcn\LICENSE_texture2ddecoder.txt
   TCC (LGPL)                            tcc\COPYING.txt
-  Python (PSF license)                  downloaded by Install.bat, python\LICENSE.txt
+  Python (PSF license)                  downloaded by setup.py, python\LICENSE.txt
   GCC / MinGW-w64 (GPL with the GCC runtime library exception), downloaded from conda-forge
-    by Install.bat (tool\get_deps.py)
+    by setup.py (tool\get_deps.py)
 
   The AGPL v3 in LICENSE.txt covers the SwitchRecomp code. Each component
   above keeps its own license.

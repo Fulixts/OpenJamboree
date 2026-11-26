@@ -1,14 +1,14 @@
 # Builds the Recomp Launcher release zip: dist/OpenJamboree-v<version>-Windows-x64.zip
 # Contents: the tracked source (git ls-files), recomplauncher.json at the top, the embedded Python
-# (python/, from nuget, hash-checked by Install.bat) and tools/nsp_extract.exe. No game files, keys or GCC.
+# (python/, from nuget, hash-checked by setup.py --python) and tools/nsp_extract.exe. No game files, keys or GCC.
 #   powershell -File launcher/make_release.ps1 -Version 0.1.0
 param([Parameter(Mandatory)][string]$Version, [string]$Dotnet = 'dotnet')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-if (-not (Test-Path 'python\python.exe')) { throw 'python\ is missing: run Install.bat first' }
+if (-not (Test-Path 'python\python.exe')) { & python setup.py --python --deps-only; if ($LASTEXITCODE) { throw 'setup.py failed' } }
 
-& $Dotnet publish tools\nsp_extract -c Release -o tools\nsp_extract\out -v q
+& $Dotnet publish tools\nsp_extract -c Release -r win-x64 -o tools\nsp_extract\out -v q
 if ($LASTEXITCODE) { throw 'nsp_extract build failed' }
 
 $stage = Join-Path $root "dist\OpenJamboree-v$Version"

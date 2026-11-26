@@ -24,13 +24,13 @@
     }
   ],
   "prepare": {
-    "program": ["python/python.exe"],
+    "program": ["python/python.exe", "launcher/prepare.sh"],
     "args": ["-u", "launcher/prepare.py", "--keys", "{input:keys}", "--base", "{input:game}", "--update", "{input:update}", "--data", "{data}"],
     "label": "Building the game from your copy (20 to 40 minutes the first time)",
-    "done": ["{install}/games/openjamboree_build.json", "{install}/games/SuperMarioPartyJamboree.exe", "{install}/games/SuperMarioPartyJamboree_code.dll"]
+    "done": ["{install}/games/openjamboree_build.json"]
   },
   "start": {
-    "program": ["games/SuperMarioPartyJamboree.exe"]
+    "program": ["games/SuperMarioPartyJamboree.exe", "games/SuperMarioPartyJamboree"]
   },
   "folders": {
     "game": [{ "path": "{install}/games" }],

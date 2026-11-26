@@ -66,7 +66,7 @@ def find_cc(pref=None, target_win=False):
         # windows: prefer the bundled tcc\, builds in seconds
         cands = (['tcc'] if exe else []) + ['x86_64-w64-mingw32-gcc', 'gcc', 'clang', 'tcc']
     else:
-        cands = ['gcc', 'clang', 'cc', 'tcc']
+        cands = ['x86_64-conda-linux-gnu-gcc', 'gcc', 'clang', 'cc', 'tcc']   # the first is setup.py's GCC (gcc/bin)
     for c in cands:
         p = look(c)
         if p: return p
