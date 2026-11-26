@@ -981,7 +981,9 @@ static int hwopus_disp(SvcObj* o, IpcCtx* c){
 
 static SvcObj* new_hwopus(void){ return svcobj_new("hwopus",hwopus_disp,0); }
 
+static void net_trace(const char* who, IpcCtx* c);
 static int bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
+  net_trace("bsd",c);
   switch(c->cmd){ case 0: out32(c,0); return 0; case 1: return 0; case 2: out32(c,(u32)-1); out32(c,106); return 0; }
   out32(c,(u32)-1); out32(c,106); return 0; }
 
@@ -1141,7 +1143,13 @@ static int mii_disp(SvcObj* o, IpcCtx* c){ if(c->cmd==0){ out_obj(c,svcobj_new("
 
 static SvcObj* new_mii(void){ return svcobj_new("mii:u",mii_disp,0); }
 
-static int ldn_disp(SvcObj* o, IpcCtx* c){ if(c->cmd==0){ out_obj(c,quiet("IUserLocalCommunicationService")); return 0; } return quiet_ok(o,c); }
+/* LAN play groundwork (docs/LAN_SPEC.md): every ldn command is logged with its first input words, so the order the
+   game uses them in can be read from a playthrough of its local wireless menu. answers stay empty for now */
+static void net_trace(const char* who, IpcCtx* c){
+  static int n; if(n>=4000) return; n++;
+  LOG("lan: %s cmd %u in %08x %08x %08x %08x\n",who,c->cmd,in32(c,0),in32(c,4),in32(c,8),in32(c,12)); }
+static int ldn_user(SvcObj* o, IpcCtx* c){ net_trace("ldn:u IUserLocalCommunicationService",c); return quiet_ok(o,c); }
+static int ldn_disp(SvcObj* o, IpcCtx* c){ net_trace("ldn:u",c); if(c->cmd==0){ out_obj(c,svcobj_new("IUserLocalCommunicationService",ldn_user,0)); return 0; } return quiet_ok(o,c); }
 
 static SvcObj* new_ldn(void){ return svcobj_new("ldn:u",ldn_disp,0); }
 
