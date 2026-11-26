@@ -22,7 +22,13 @@ foreach ($f in (git ls-files)) {
 Copy-Item -Recurse python (Join-Path $stage 'python')
 Get-ChildItem (Join-Path $stage 'python') -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 Copy-Item tools\nsp_extract\out\nsp_extract.exe (Join-Path $stage 'tools\nsp_extract.exe')
-# SDL3 (zlib) for PlayStation / Xbox pads, with its license
+# SDL3 (zlib) for PlayStation / Xbox pads, with its license: the official 3.4.20 build, checked by sha256
+if (-not (Test-Path tools\sdl3\SDL3.dll)) {
+    $z = Join-Path $env:TEMP 'SDL3-3.4.20-win32-x64.zip'
+    Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20-win32-x64.zip' -OutFile $z
+    if ((Get-FileHash $z -Algorithm SHA256).Hash.ToLower() -ne '368bed8b24e44ad9ea372990814f2343fcfb9e468abb7f8f4a3bc146c7304752') { throw 'SDL3 download is damaged (checksum)' }
+    Expand-Archive -Force $z tools\sdl3
+}
 Copy-Item tools\sdl3\SDL3.dll (Join-Path $stage 'tools\SDL3.dll')
 Copy-Item tools\sdl3\LICENSE.txt (Join-Path $stage 'tools\SDL3-LICENSE.txt')
 
