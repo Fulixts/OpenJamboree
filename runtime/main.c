@@ -22,7 +22,7 @@ char g_datadir[1024], g_dumpdir[1024], g_exename[256], g_exedir[1024];
 volatile int g_quit;
 int g_frames;
 int g_opt_diag=0;
-int g_opt_docked=0, g_opt_lang=1, g_opt_res=1, g_opt_fps=1, g_opt_vsync=0, g_opt_drs=0;
+int g_opt_docked=1, g_opt_lang=1, g_opt_res=1, g_opt_fps=1, g_opt_vsync=0, g_opt_drs=0;
 float g_opt_resf=1.0f; int g_opt_shadows=1; int g_opt_cmp_low=1; int g_opt_shader_thread=1; int g_opt_drv_excl=-1; int g_opt_shader_proc=-1; u32 g_loop_limit=16384; int g_opt_resdyn=0; int g_opt_prof=0; float g_opt_resmin=0.6f;
 static char g_hints_path[1200];
 
@@ -216,7 +216,7 @@ typedef struct { const char* key; const char* def; const char* help; } IniOpt;
 typedef struct { const char* title; const IniOpt* o; } IniSec;
 
 static const IniOpt INI_DISPLAY[]={
-  {"docked","0","1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)"},
+  {"docked","1","1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)"},
   {"fullscreen","1","1 = start in fullscreen (F11 or Alt+Enter toggles it in game)"},
   {"language","1","Game language: 0 Japanese, 1 English (US), 2 French, 3 German, 4 Italian, 5 Spanish,\n;   6 Chinese, 7 Korean, 8 Dutch, 9 Portuguese, 10 Russian, 11 Taiwanese, 12 English (UK),\n;   13 French (Canada), 14 Spanish (Latin America), 15 Simplified Chinese, 16 Traditional Chinese, 17 Portuguese (Brazil)"},
   {"keyboard_text","Player","What the on-screen keyboard answers when a game asks you to type something (names...)"},

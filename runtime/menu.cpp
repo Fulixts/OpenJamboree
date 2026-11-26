@@ -156,7 +156,6 @@ static void tab_game(void) {
   bool fs = backend_is_fullscreen() != 0;
   if (ImGui::Checkbox("Tela cheia", &fs)) { backend_request_fullscreen(fs ? 1 : 0); seti("fullscreen", fs ? 1 : 0); }
   toggle("Pular o vídeo de abertura", "skip_intro", 1, "Toca só 1 segundo da abertura de 3 minutos. Vale no próximo início.");
-  toggle("Modo TV (1080p)", "docked", 0, "Desligado = modo portátil (720p). Vale no próximo início.");
   static const char* const ln[] = {"Português (Brasil)", "English (US)", "English (UK)", "Español (Latinoamérica)", "Español", "Français", "Deutsch", "Italiano", "日本語"};
   static const char* const lv[] = {"17", "1", "12", "14", "5", "2", "3", "4", "0"};
   combo("Idioma do jogo", "language", ln, lv, 9, "1");
@@ -165,6 +164,11 @@ static void tab_game(void) {
 }
 
 static void tab_graphics(void) {
+  ImGui::SeparatorText("Qualidade da imagem");
+  static const char* const dn[] = {"Modo TV: 1080p (mais nítido)", "Modo portátil: 720p (mais leve)"};
+  static const char* const dv[] = {"1", "0"};
+  combo("Modo do console", "docked", dn, dv, 2, "1");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("O jogo desenha em 1080p no modo TV e em 720p no portátil. Vale no próximo início.");
   static const char* const rn[] = {"50% (mais rápido)", "75%", "100% (nativo)", "150%", "200%", "300%", "400%"};
   static const char* const rv[] = {"0.5", "0.75", "1", "1.5", "2", "3", "4"};
   combo("Resolução interna", "resolution", rn, rv, 7, "1");
@@ -174,7 +178,11 @@ static void tab_graphics(void) {
     float m = fv("dynamic_resolution_min", 0.6f) * 100;
     if (ImGui::SliderFloat("Resolução mínima", &m, 25, 100, "%.0f%%")) setf("dynamic_resolution_min", m / 100);
   }
+  ImGui::TextDisabled("1080p x 150%% = 1620p, x 200%% = 4K. Placas como a RTX 3060 aguentam 150%% a 200%%.");
   toggle("Sombras", "shadows", 1, "Desligar ganha FPS em placas fracas.");
+  ImGui::SeparatorText("Carregamento");
+  toggle("Guardar texturas convertidas no disco", "texture_cache", 1,
+         "Deixa as telas de carregamento bem mais curtas a partir da segunda vez. Vale no próximo início.");
   ImGui::SeparatorText("Fluidez");
   bool lim = iv("fps_limit", 1) == 1;
   if (ImGui::Checkbox("Travar em 60 FPS (como no console)", &lim)) seti("fps_limit", lim ? 1 : 0);

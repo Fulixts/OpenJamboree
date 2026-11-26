@@ -1,5 +1,22 @@
 # OpenJamboree
 
+> **This fork** ([Fulixts/OpenJamboree](https://github.com/Fulixts/OpenJamboree), based on
+> [drewkellar/OpenJamboree](https://github.com/drewkellar/OpenJamboree)) targets the **2.3.0 update** and adds:
+>
+> - **Recomp Launcher support** ([`recomplauncher.json`](recomplauncher.json)): pick your base game `.nsp`, the 2.3.0
+>   update `.nsp` and your `prod.keys`, and the launcher's Easy Setup unpacks, checks and builds the game
+>   ([`launcher/prepare.py`](launcher/prepare.py), [`tools/nsp_extract`](tools/nsp_extract)).
+> - **In-game menu on Esc** (Share + Options / View + Menu on a pad): picture quality (TV 1080p / handheld 720p,
+>   internal resolution up to 400%), dynamic resolution, shadows, 60 FPS lock, V-Sync, language (Português do Brasil
+>   included), fullscreen, quit ([`runtime/menu.cpp`](runtime/menu.cpp), Dear ImGui).
+> - **Skip the 3 minute opening**: a 1 second cut of your own movie, through a LayeredFS-style romfs layer
+>   ([`launcher/trim_intro.py`](launcher/trim_intro.py), `runtime/svc_fs.c`).
+> - **PlayStation, Xbox and Switch Pro pads natively** through SDL3 (DualSense tested).
+> - **Texture cache on disk**: ASTC textures converted for the PC are kept, so loads are much shorter from the second time.
+>
+> Next: **LAN play** (local wireless / LDN over the network, e.g. ZeroTier) and **mods** (romfs layers).
+> Development happens on `main`; build steps below are the same, pointed at a 2.3.0 dump.
+
 An unofficial native PC port of **Super Mario Party Jamboree** (Nintendo Switch, v1.1.0) made by static
 recompilation. The game's ARM64 code is translated to C and compiled into a Windows module on your own PC; a runtime
 provides the Switch OS services, the GPU (as OpenGL), audio and video.
@@ -44,7 +61,7 @@ Full notes, every bug with its cause and fix, and the plan: [`docs/JAMBOREE_PORT
 
 Saves go to `games/<Game>_data/save/`. Controls and options: [`README.txt`](README.txt) (F1 in game shows the keys).
 Keyboard: arrows = D-pad, WASD = left stick, X/Space = A, Z = B, C = X, V = Y, Q = L, E = R, Enter = +, Backspace = -.
-Hold Esc for 1.5 s to quit (a tap does nothing).
+Esc opens the in-game menu; quitting is a button there.
 
 ## Never commit or share
 
