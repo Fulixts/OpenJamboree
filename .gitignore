@@ -112,3 +112,9 @@ _work/*.orig
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ---- launcher release (launcher/make_release.ps1) ----
+dist/
+tools/nsp_extract/bin/
+tools/nsp_extract/obj/
+tools/nsp_extract/out/
