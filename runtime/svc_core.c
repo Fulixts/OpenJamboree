@@ -667,7 +667,10 @@ static int nifm_req(SvcObj* o, IpcCtx* c){ (void)o;
   return 0; }
 
 static int nifm_gen(SvcObj* o, IpcCtx* c){ (void)o;
-  switch(c->cmd){ case 4: out_obj(c,svcobj_new("IRequest",nifm_req,0)); return 0; case 2: out_obj(c,svcobj_new("IScanRequest",nifm_req,0)); return 0; case 5: case 12: return RC(110,300);
+  switch(c->cmd){ case 4: out_obj(c,svcobj_new("IRequest",nifm_req,0)); return 0; case 2: out_obj(c,svcobj_new("IScanRequest",nifm_req,0)); return 0; case 5: return RC(110,300);
+    case 12: { extern u32 lan_nifm_ip_nbo(void); u32 ip=lan_nifm_ip_nbo(); if(!ip) return RC(110,300); out32(c,ip); return 0; }   /* GetCurrentIpAddress, network order */
+    case 15: { extern u32 lan_nifm_ip_nbo(void), lan_nifm_mask_nbo(void); u32 ip=lan_nifm_ip_nbo(); if(!ip) return RC(110,300);
+      u8 b[0x16]={0}; b[0]=1; memcpy(b+1,&ip,4); u32 m=lan_nifm_mask_nbo(); memcpy(b+5,&m,4); outbytes(c,b,0x16); return 0; }   /* GetCurrentIpConfigInfo */
     case 18: out32(c,0); return 0; case 21: out8(c,0); return 0; case 22: out8(c,0); return 0; case 1: outbytes(c,"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10",16); return 0; }
   return 0; }
 
@@ -982,10 +985,8 @@ static int hwopus_disp(SvcObj* o, IpcCtx* c){
 static SvcObj* new_hwopus(void){ return svcobj_new("hwopus",hwopus_disp,0); }
 
 static void net_trace(const char* who, IpcCtx* c);
-static int bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
-  net_trace("bsd",c);
-  switch(c->cmd){ case 0: out32(c,0); return 0; case 1: return 0; case 2: out32(c,(u32)-1); out32(c,106); return 0; }
-  out32(c,(u32)-1); out32(c,106); return 0; }
+extern int lan_bsd_disp(SvcObj* o, IpcCtx* c);   /* lan.c: the game's sockets on host sockets */
+static int bsd_disp(SvcObj* o, IpcCtx* c){ net_trace("bsd",c); return lan_bsd_disp(o,c); }
 
 static SvcObj* new_bsd(void){ return svcobj_new("bsd",bsd_disp,0); }
 
@@ -1149,7 +1150,8 @@ static void net_trace(const char* who, IpcCtx* c){
   static int n; if(n>=4000) return; n++;
   LOG("lan: %s cmd %u in %08x %08x %08x %08x\n",who,c->cmd,in32(c,0),in32(c,4),in32(c,8),in32(c,12)); }
 static int ldn_user(SvcObj* o, IpcCtx* c){ net_trace("ldn:u IUserLocalCommunicationService",c); return quiet_ok(o,c); }
-static int ldn_disp(SvcObj* o, IpcCtx* c){ net_trace("ldn:u",c); if(c->cmd==0){ out_obj(c,svcobj_new("IUserLocalCommunicationService",ldn_user,0)); return 0; } return quiet_ok(o,c); }
+extern int lan_ldn_disp(SvcObj* o, IpcCtx* c);   /* lan.c: ldn over LAN/ZeroTier (docs/LAN_SPEC.md) */
+static int ldn_disp(SvcObj* o, IpcCtx* c){ net_trace("ldn:u",c); (void)ldn_user; return lan_ldn_disp(o,c); }
 
 static SvcObj* new_ldn(void){ return svcobj_new("ldn:u",ldn_disp,0); }
 

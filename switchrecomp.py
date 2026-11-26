@@ -30,7 +30,7 @@ import nxloader, codegen
 
 RT = os.path.join(HERE, 'runtime')
 RUNTIME_SRC = ['plat', 'mem', 'kernel', 'ipc', 'svc_core', 'audio', 'svc_hid', 'svc_fs', 'svc_vi', 'nvdrv', 'svc_ns2', 'sm86', 'gpu', 'gpu_engines',
-               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue']
+               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue', 'lan']
 ABI = 1
 # portable compilers next to us: tcc\, the GCC package (gcc\), w64devkit
 CC_DIRS = [os.path.join(HERE, *d) for d in (('tcc',), ('tools', 'tcc'), ('gcc', 'bin'), ('gcc', 'Library', 'bin'),
@@ -329,7 +329,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
         # static on Linux too, so the runtime doesn't depend on the libstdc++ version of the distro
         cmd += ['-lstdc++'] if target_win else ['-Wl,-Bstatic', '-lstdc++', '-Wl,-Bdynamic', '-static-libgcc']
     if target_win:
-        cmd += ['-static', '-lgdi32', '-lwinmm', '-luser32', '-lopengl32', '-lcomdlg32', '-lshell32', '-mwindows' if backend == 'win32' else '-mconsole']
+        cmd += ['-static', '-lws2_32', '-liphlpapi', '-lgdi32', '-lwinmm', '-luser32', '-lopengl32', '-lcomdlg32', '-lshell32', '-mwindows' if backend == 'win32' else '-mconsole']
         if backend == 'win32': cmd += ['-lmfplat', '-lmfreadwrite', '-lmfuuid', '-lole32']
     else:
         cmd += ['-lpthread', '-ldl', '-lm', '-rdynamic']
