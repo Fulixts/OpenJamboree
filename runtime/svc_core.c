@@ -1032,7 +1032,33 @@ static int bsd_disp(SvcObj* o, IpcCtx* c){ net_trace("bsd",c); int r=lan_bsd_dis
 
 static SvcObj* new_bsd(void){ return svcobj_new("bsd",bsd_disp,0); }
 
-static int ssl_disp(SvcObj* o, IpcCtx* c){ if(c->cmd==0){ out_obj(c,quiet("ISslContext")); return 0; } return quiet_ok(o,c); }
+/* ssl built-in certificates (docs/ONLINE_SPEC.md): online play's OpenSSL trusts what GetCertificates returns, so the
+   runtime returns our CA (<exe>_online/ca.der) under every id asked for. the host's own server presents a certificate
+   signed by it. layout (Ryujinx): BuiltInCertificateInfo {u32 id, u32 status (1 = trusted), u64 size, u64 offset}[n]
+   (+ a terminator {All, Invalid} when All = 0xFFFFFFFF was asked), then the DER data, each padded to 4 */
+static u8* ssl_ca(u32* n){ static u8* d; static u32 dn; static int tried;
+  if(!tried){ tried=1; char p[1200]; snprintf(p,sizeof p,"%s%s_online/ca.der",g_exedir,g_exename); FILE* f=fopen(p,"rb");
+    if(f){ fseek(f,0,SEEK_END); long l=ftell(f); fseek(f,0,SEEK_SET); if(l>0 && l<65536){ d=malloc(l); dn=(u32)fread(d,1,l,f); } fclose(f); }
+    LOG("online: CA %s (%u bytes)\n",p,dn); }
+  *n=dn; return d; }
+static u32 ssl_certs(IpcCtx* c, u8* out, u64 cap){
+  u64 a,s; buf_in(c,0,&a,&s); u32 nid=(u32)(s/4), all=0; u32 ids[16]; u32 cn; u8* ca=ssl_ca(&cn); if(!ca) cn=0;
+  for(u32 i=0;i<nid && i<16;i++){ memcpy(&ids[i],GP(a)+i*4,4); if(ids[i]==0xFFFFFFFFu) all=1; }
+  u32 ne= all? 1 : (nid<16? nid : 16), ninfo= ne+(all? 1 : 0), pad=(cn+3)&~3u;
+  u32 need= ninfo*24 + ne*pad;
+  if(out && cap>=need){ memset(out,0,need); u32 off=ninfo*24;
+    for(u32 i=0;i<ne;i++){ u32 id= all? 1 : ids[i], st=1; u64 sz=cn, of=off; u8* e=out+i*24;
+      memcpy(e,&id,4); memcpy(e+4,&st,4); memcpy(e+8,&sz,8); memcpy(e+16,&of,8); memcpy(out+off,ca,cn); off+=pad; }
+    if(all){ u8* e=out+ne*24; u32 id=0xFFFFFFFFu, st=0xFFFFFFFFu; memcpy(e,&id,4); memcpy(e+4,&st,4); } }
+  return need; }
+static int ssl_disp(SvcObj* o, IpcCtx* c){
+  if(c->cmd==0){ out_obj(c,quiet("ISslContext")); return 0; }
+  if(c->cmd==2){ u64 b,bs; buf_out(c,0,&b,&bs); u32 need=ssl_certs(c,b? GP(b) : NULL,bs); if(need>bs) return RC(123,214); u64 a,s; buf_in(c,0,&a,&s);
+    u32 n=0; for(u64 i=0;i+4<=s;i+=4){ u32 id; memcpy(&id,GP(a)+i,4); n= id==0xFFFFFFFFu? 1 : n+1; if(id==0xFFFFFFFFu) break; }
+    LOG("online: ssl gave %u certificate(s)\n",n); out32(c,n); return 0; }                                       /* GetCertificates */
+  if(c->cmd==3){ out32(c,ssl_certs(c,NULL,0)); return 0; }                                                       /* GetCertificateBufSize */
+  if(c->cmd==5) return 0;                                                                                        /* SetInterfaceVersion */
+  return quiet_ok(o,c); }
 
 static SvcObj* new_ssl(void){ return svcobj_new("ssl",ssl_disp,0); }
 
@@ -1203,7 +1229,7 @@ static void nsd_resolve(const char* in, char* out, int n){ int o=0; for(int i=0;
 static int nsd_disp(SvcObj* o, IpcCtx* c){ (void)o; u64 a,s,b,bs;
   switch(c->cmd){
     case 10: buf_out(c,0,&a,&s); if(a && s){ memset(GP(a),0,s); memcpy(GP(a),"lp1",s<3? s : 3); } return 0;        /* GetSettingName */
-    case 11: { char e[8]={'l','p','1',0,0,0,0,0}; outbytes(c,e,8); return 0; }                                        /* GetEnvironmentIdentifier */
+    case 11: buf_out(c,0,&a,&s); if(a && s){ memset(GP(a),0,s); memcpy(GP(a),"lp1",s<3? s : 3); } return 0;      /* GetEnvironmentIdentifier: in an out buffer (0x16), not raw */
     case 12: { u8 id[16]={0x4f,0x4a,0x41,0x4d,1,2,3,4,5,6,7,8,9,10,11,12}; outbytes(c,id,16); return 0; }           /* GetDeviceId */
     case 20: case 21: { buf_in(c,0,&a,&s); buf_out(c,0,&b,&bs); char in[0x101]={0}, out[0x100];                      /* Resolve, ResolveEx */
       if(a && s) memcpy(in,GP(a),s<0x100? s : 0x100); nsd_resolve(in,out,sizeof out);
@@ -1227,7 +1253,9 @@ static SvcObj* new_ntc(void){ return svcobj_new("ntc",ntc_disp,0); }
 extern int lan_sfdnsres_disp(SvcObj* o, IpcCtx* c);
 static SvcObj* new_sfdnsres(void){ return svcobj_new("sfdnsres",lan_sfdnsres_disp,0); }
 
-static int ectx_disp(SvcObj* o, IpcCtx* c){ (void)o; (void)c; return 0; }
+/* ectx:aw (nn::err context): online play registers an error context when a call fails; its registrar answers success */
+static int ectx_reg(SvcObj* o, IpcCtx* c){ (void)o; if(c->cmd==0) out32(c,0); return 0; }
+static int ectx_disp(SvcObj* o, IpcCtx* c){ (void)o; if(c->cmd==0){ out_obj(c,svcobj_new("IContextRegistrar",ectx_reg,0)); return 0; } return 0; }
 
 static SvcObj* new_ectx(void){ return svcobj_new("ectx:aw",ectx_disp,0); }
 

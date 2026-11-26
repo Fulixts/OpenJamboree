@@ -630,6 +630,7 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
       buf_in(c,0,&a,&s); struct sockaddr_in to; if(!sa_in(a,s,&to)){ bsd_ret(c,-1,22); return 0; }
       pin(fd);
+      { char t[20]; ip_str(ntohl(to.sin_addr.s_addr),t); LOG("lan: socket %u connects to %s:%u\n",fd,t,ntohs(to.sin_port)); }
       int r=connect(g_fd[fd].s,(struct sockaddr*)&to,sizeof to);
       if(r) bsd_fail(c,1); else bsd_ret(c,0,0); return 0; }
     case 15: case 16: {

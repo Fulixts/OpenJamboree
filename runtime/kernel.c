@@ -688,6 +688,9 @@ static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
       LOG("grpc: op %u flags %x\n",op,fl);
       if(op!=0) continue;
       u64 cnt,md; memcpy(&cnt,GP(ops+k*0x50+16),8); memcpy(&md,GP(ops+k*0x50+24),8);
+      LOG("grpc: %llu metadata at %llx\n",(unsigned long long)cnt,(unsigned long long)md);
+      for(u64 r=0;r<cnt*96 && r<4*96;r+=32){ u64 w[4]; memcpy(w,GP(md+r),32);
+        LOG("grpc:   +%03llx %016llx %016llx %016llx %016llx\n",(unsigned long long)r,(unsigned long long)w[0],(unsigned long long)w[1],(unsigned long long)w[2],(unsigned long long)w[3]); }
       for(u64 m=0;m<cnt && m<32;m++){ char kv[2][200];
         for(int h=0;h<2;h++){ u64 sl=md+m*96+h*32, rc; memcpy(&rc,GP(sl),8); u64 len; const u8* p;
           if(!rc){ len=*GP(sl+8); p=GP(sl+9); } else { u64 bp; memcpy(&len,GP(sl+8),8); memcpy(&bp,GP(sl+16),8); p=GP(bp); }
