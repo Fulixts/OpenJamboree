@@ -124,3 +124,6 @@ tools/nsp_extract/out/
 *_texcache/
 performance.txt
 frames.csv
+
+# ---- our own art (icon for the Recomp Launcher catalog) ----
+!docs/art/*.png
