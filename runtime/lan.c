@@ -43,6 +43,7 @@ typedef int SOCKET;
 #endif
 
 extern const char* ini_value(const char*, const char*);
+static u32 online_host_ip(void);
 #define plat_sleep_ms(ms) plat_sleep_ns((i64)(ms)*1000000)
 
 /* ============================================================ adapter */
@@ -630,6 +631,8 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
       buf_in(c,0,&a,&s); struct sockaddr_in to; if(!sa_in(a,s,&to)){ bsd_ret(c,-1,22); return 0; }
       pin(fd);
+      /* online play: port 443 of the host goes to its built-in server (online.c), which listens on a high port */
+      { extern u16 online_port(void); if(ntohs(to.sin_port)==443 && ntohl(to.sin_addr.s_addr)==online_host_ip()) to.sin_port=htons(online_port()); }
       { char t[20]; ip_str(ntohl(to.sin_addr.s_addr),t); LOG("lan: socket %u connects to %s:%u\n",fd,t,ntohs(to.sin_port)); }
       int r=connect(g_fd[fd].s,(struct sockaddr*)&to,sizeof to);
       if(r) bsd_fail(c,1); else bsd_ret(c,0,0); return 0; }

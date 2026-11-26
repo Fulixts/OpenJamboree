@@ -681,7 +681,7 @@ static SvcObj* new_pctl(void){ return svcobj_new("pctl",pctl_disp,0); }
 static void net_trace(const char* who, IpcCtx* c);
 /* online=1 in the .ini (docs/ONLINE_SPEC.md, work in progress): nifm answers "connected" so the game goes on into its
    online mode, and every call it makes there shows up in the log. off by default: the game stays offline */
-static int online_on(void){ static int v=-1; if(v<0){ extern const char* ini_value(const char*, const char*); v=strcmp(ini_value("online","0"),"0")!=0; if(v) LOG("online: nifm reports a connection (online=1)\n"); } return v; }
+static int online_on(void){ static int v=-1; if(v<0){ extern const char* ini_value(const char*, const char*); v=strcmp(ini_value("online","0"),"0")!=0; if(v){ LOG("online: nifm reports a connection (online=1)\n"); extern void online_server_start(void); online_server_start(); } } return v; }
 static int nifm_req(SvcObj* o, IpcCtx* c){ (void)o;
   if(online_on()) net_trace("nifm IRequest",c);
   switch(c->cmd){ case 0: out32(c,online_on()? 3 : 1); return 0; case 1: return online_on()? 0 : RC(110,300);
