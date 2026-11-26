@@ -4,28 +4,28 @@
   "name": "OpenJamboree",
   "inputs": [
     {
-      "id": "keys",
-      "label": "Your prod.keys, dumped from your own Switch",
-      "role": "key",
-      "shared": "switch.prod-keys",
-      "optional": false
-    },
-    {
       "id": "game",
-      "label": "Your Super Mario Party Jamboree base game (.nsp, title 0100965017338000, version 0), dumped from your own Switch. It is read where it is: keep it there.",
+      "label": "Super Mario Party Jamboree, base game (.nsp, title 0100965017338000, version 0), dumped from your own Switch",
       "role": "game",
-      "formats": [{ "type": "file", "extensions": ["nsp"], "requires": ["keys"] }]
+      "formats": [{ "type": "file", "extensions": ["nsp"], "requires": ["keys"] }],
+      "check": { "ids": ["0100965017338000"] }
     },
     {
       "id": "update",
-      "label": "Your Super Mario Party Jamboree update 2.3.0 (.nsp, version 458752), dumped from your own Switch",
+      "label": "Its update 2.3.0 (.nsp, title 0100965017338800, version 458752), dumped from your own Switch",
       "role": "update",
       "formats": [{ "type": "file", "extensions": ["nsp"], "requires": ["keys"] }]
+    },
+    {
+      "id": "keys",
+      "label": "Your prod.keys, dumped from your own Switch",
+      "role": "key",
+      "shared": "switch.prod-keys"
     }
   ],
   "prepare": {
     "program": ["python/python.exe", "launcher/prepare.sh"],
-    "args": ["-u", "launcher/prepare.py", "--keys", "{input:keys}", "--base", "{input:game}", "--update", "{input:update}", "--data", "{data}"],
+    "args": ["-u", "{install}/launcher/prepare.py", "--keys={input:keys}", "--base={input:game}", "--update={input:update}", "--data={data}"],
     "label": "Building the game from your copy (20 to 40 minutes the first time)",
     "done": ["{install}/games/openjamboree_build.json"]
   },
