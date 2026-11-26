@@ -218,7 +218,7 @@ typedef struct { const char* title; const IniOpt* o; } IniSec;
 static const IniOpt INI_DISPLAY[]={
   {"docked","0","1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)"},
   {"fullscreen","1","1 = start in fullscreen (F11 or Alt+Enter toggles it in game)"},
-  {"language","1","Game language: 0 Japanese, 1 English (US), 2 French, 3 German, 4 Italian, 5 Spanish,\n;   6 Chinese, 7 Korean, 8 Dutch, 9 Portuguese, 10 Russian, 11 Taiwanese, 12 English (UK),\n;   13 French (Canada), 14 Spanish (Latin America)"},
+  {"language","1","Game language: 0 Japanese, 1 English (US), 2 French, 3 German, 4 Italian, 5 Spanish,\n;   6 Chinese, 7 Korean, 8 Dutch, 9 Portuguese, 10 Russian, 11 Taiwanese, 12 English (UK),\n;   13 French (Canada), 14 Spanish (Latin America), 15 Simplified Chinese, 16 Traditional Chinese, 17 Portuguese (Brazil)"},
   {"keyboard_text","Player","What the on-screen keyboard answers when a game asks you to type something (names...)"},
   {NULL,NULL,NULL}};
 
@@ -245,6 +245,7 @@ static const IniOpt INI_PERF[]={
   {"memory_gb","0","Memory the game sees: 0 = automatic (3.2 GB like the console, more for games that need it,\n;   e.g. Tears of the Kingdom), 4 = console (3.2 GB), 6 or 8 = extended (like yuzu's extended memory layout)"},
   {"driver_exclusive","auto","auto = on for intel on windows (its driver crashes when compiling and drawing at the same time),\n;   1 = always, 0 = never"},
   {"shader_thread","1","1 = compile shaders on a separate thread (no freezes), 0 = on the GPU thread (short freezes;\n;   try it if the game crashes inside the video driver)"},
+  {"texture_cache","1","1 = keep the game's textures, once converted for your GPU, in <name>_texcache (faster loads from the\n;   second time on; the first load of each screen is still slow). 0 = convert them on every load"},
   {"low_priority_shader_compiler","1","1 = compile shaders at low priority (less stutter on weak CPUs)"},
   {NULL,NULL,NULL}};
 
@@ -274,6 +275,7 @@ static const IniOpt INI_DBG[]={
   {NULL,NULL,NULL}};
 
 static const IniOpt INI_GAME[]={
+  {"skip_intro","1","1 = skip the 3 minute opening movie: plays a 1 second copy of it that the setup made from your dump\n;   (<name>_overlay/skip_intro). 0 = the full movie. Applies on restart"},
   {"game_dump","","Folder with YOUR OWN dump of the game: the one with exefs and romfs inside (nothing is copied).\n;   Empty = the <name>_data folder next to this program. If neither has the game, you are asked for the folder"},
   {NULL,NULL,NULL}};
 
@@ -307,6 +309,10 @@ void ini_write(void){
 volatile int g_ini_dirty;
 
 void ini_set(const char* k, const char* v){ ini_store(k,v); g_ini_dirty=1; }
+
+/* for the in-game menu (menu.cpp) and the romfs layers: read a setting, or change it and apply it now */
+const char* ini_value(const char* k, const char* def){ return ini_get(k,def); }
+void ini_set_apply(const char* k, const char* v){ ini_store(k,v); ini_apply(k,v); g_ini_dirty=1; }
 
 void ini_open(const char* path){ strncpy(g_ini_path,path,sizeof g_ini_path-1); ini_load(path); ini_write(); }
 

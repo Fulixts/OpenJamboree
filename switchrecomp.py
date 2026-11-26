@@ -292,6 +292,10 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     edenvk = gl and backend in ('win32', 'x11') and all(os.path.isfile(x) for x in evk_libs) and not os.environ.get('SWR_NO_EDENVK')
     if not edenvk: srcs += [os.path.join(RT, 'edenvk_stub.c')]
     if target_win and backend == 'win32': srcs += [os.path.join(RT, 'rec_win32.c')]   # F7 recorder, Media Foundation
+    # OpenJamboree: in-game Esc menu (runtime/menu.cpp) with Dear ImGui (MIT, runtime/imgui)
+    menu = target_win and backend == 'win32'
+    if menu: srcs += [os.path.join(RT, 'menu.cpp')] + [os.path.join(RT, 'imgui', f) for f in
+                      ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_opengl3.cpp')]
     # NVDEC/VIC video: link OpenH264 (BSD) statically if we have it for this target
     oh = os.path.join(RT, 'oh264', 'win' if target_win else 'lin')
     h264_libs = [os.path.join(oh, 'libdecoder.a'), os.path.join(oh, 'libcommon.a')]
@@ -321,7 +325,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if opus: cmd += [os.path.join(op, 'libopus.a')]
     if vp9: cmd += [os.path.join(vp, 'libvpx.a')]
     if edenvk: cmd += evk_libs + (['-luuid', '-lole32', '-lshell32', '-lntdll'] if target_win else [])
-    if spvc or h264 or edenvk:
+    if spvc or h264 or edenvk or menu:
         # static on Linux too, so the runtime doesn't depend on the libstdc++ version of the distro
         cmd += ['-lstdc++'] if target_win else ['-Wl,-Bstatic', '-lstdc++', '-Wl,-Bdynamic', '-static-libgcc']
     if target_win:

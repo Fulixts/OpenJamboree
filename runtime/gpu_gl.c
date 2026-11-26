@@ -406,6 +406,32 @@ static void ds_rows(void* c, u32 a, u32 b){ DsJob* j=c;
     u32 sk[4]; for(u32 k=0;k<4;k++) sk[k]= nat? gob_native(rin+seg[k]) : rin+seg[k];
     for(u32 gx=0;gx<gob_w;gx++){ u64 base=row+(u64)gx*bsz; u32 x0=gx*64;
       for(u32 k=0;k<4;k++){ u32 x=x0+k*16; if(x>=rowb) break; u32 n=rowb-x<16? rowb-x : 16; u64 o=base+sk[k]; if(o+n<=j->lsz) memcpy(dr+x,j->src+o,n); } } } }
+/* disk cache of ASTC textures already turned into BC3 (OpenJamboree): <exe>_texcache/<2 hex>/<16 hex>.bc3, named by a
+   64-bit hash of the ASTC level plus its size and format. texture_cache=0 in the .ini turns it off */
+static int texcache_on(void){ static int on=-1; if(on<0){ extern const char* ini_value(const char*, const char*); on=strcmp(ini_value("texture_cache","1"),"0")!=0; } return on; }
+static u64 texcache_key(const u8* p, u64 n, u32 w, u32 h, u32 bw, u32 bh, u32 fmt){
+  if(!texcache_on()) return 0;
+  u64 a=0x9E3779B97F4A7C15ull^n, b=((u64)w<<32|h)^((u64)bw<<48|(u64)bh<<40|fmt)*0xC2B2AE3D27D4EB4Full;
+  u64 i=0; for(;i+16<=n;i+=16){ u64 x,y; memcpy(&x,p+i,8); memcpy(&y,p+i+8,8);
+    a=(a^(x*0x87C37B91114253D5ull))*0x4CF5AD432745937Full; a^=a>>29; b=(b^(y*0x52DCE729DA3ED7Bull))*0x9E3779B97F4A7C15ull; b^=b>>31; }
+  for(;i<n;i++){ a=(a^p[i])*0x100000001B3ull; }
+  u64 k=a^(b*0xFF51AFD7ED558CCDull); k^=k>>33; return k? k : 1; }
+static void texcache_path(u64 k, char* out, size_t n, int mkdirs){
+  snprintf(out,n,"%s%s_texcache",g_exedir,g_exename); if(mkdirs) plat_mkdir(out);
+  size_t l=strlen(out); snprintf(out+l,n-l,"/%02x",(unsigned)(k>>56)); if(mkdirs) plat_mkdir(out);
+  l=strlen(out); snprintf(out+l,n-l,"/%016llx.bc3",(unsigned long long)k); }
+static u8* texcache_get(u64 k, size_t want){
+  if(!k) return NULL; char p[1400]; texcache_path(k,p,sizeof p,0);
+  FILE* f=fopen(p,"rb"); if(!f) return NULL;
+  u8* b=malloc(want+16); size_t got= b? fread(b,1,want+1,f) : 0; fclose(f);
+  if(got!=want){ free(b); return NULL; }
+  static u64 hits; if(!(hits++&1023)) LOG("texcache: %llu textures read back from disk\n",(unsigned long long)hits);
+  return b; }
+static void texcache_put(u64 k, const u8* b, size_t n){
+  if(!k) return; char p[1400], t[1420]; texcache_path(k,p,sizeof p,1); snprintf(t,sizeof t,"%s.tmp",p);
+  FILE* f=fopen(t,"wb"); if(!f) return; size_t w=fwrite(b,1,n,f); fclose(f);
+  if(w!=n || rename(t,p)) remove(t); }
+
 /* ASTC / BCn: ranges of block rows */
 typedef struct { const u8* src; u8* dst; u32 w, h, bw, bh, kind, bsz; } DecJob;
 extern void astc_decode_rows(const u8* src, u32 w, u32 h, u32 bw, u32 bh, u8* dst, u32 j0, u32 j1);
@@ -509,9 +535,13 @@ static void tex_upload(Tex* t){ st_tex_up+=t->size;
           glTexSubImage3D(GL_TEXTURE_3D,gl_l,0,0,0,lw,lh,ld,GL_RGBA,GL_HALF_FLOAT,h); free(h); }
         free(lin); free(src); off+= t->bl? lsz : (u64)t->pitch*th; continue; }
       if((f->astc||f->dec) && !(dec=malloc((size_t)lw*lh*4+64))){ free(lin); free(src); off+= t->bl? lsz : (u64)t->pitch*th; continue; }
-      if(f->astc){ DecJob dj={lin,dec,lw,lh,f->bw,f->bh,0,16}; pf_run(astc_rows,&dj,(lh+f->bh-1)/f->bh,16); up=dec; }
-      if(f->astc && f->tobc){ u32 bx=(lw+3)/4, by=(lh+3)/4; GLsizei isz=(GLsizei)((size_t)bx*by*16); u8* bc=malloc((size_t)isz+16);
-        if(bc){ BcEnc ej={dec,bc,lw,lh}; pf_run(bc3_rows,&ej,by,8);
+      /* ASTC -> BC3 is the slow part of a load (white loading screens): the result is kept on disk by the hash of the
+         ASTC data (texcache_*), so the next time the same texture is just read back */
+      u64 tkey=0; u8* tc_bc=NULL;
+      if(f->astc && f->tobc){ tkey=texcache_key(lin,lin_size,lw,lh,f->bw,f->bh,f->ifmt); tc_bc=texcache_get(tkey,(size_t)((lw+3)/4)*((lh+3)/4)*16); }
+      if(f->astc && !tc_bc){ DecJob dj={lin,dec,lw,lh,f->bw,f->bh,0,16}; pf_run(astc_rows,&dj,(lh+f->bh-1)/f->bh,16); up=dec; }
+      if(f->astc && f->tobc){ u32 bx=(lw+3)/4, by=(lh+3)/4; GLsizei isz=(GLsizei)((size_t)bx*by*16); u8* bc= tc_bc? tc_bc : malloc((size_t)isz+16);
+        if(bc){ if(!tc_bc){ BcEnc ej={dec,bc,lw,lh}; pf_run(bc3_rows,&ej,by,8); texcache_put(tkey,bc,(size_t)isz); }
           if(t->target==GL_TEXTURE_2D) glCompressedTexSubImage2D(GL_TEXTURE_2D,gl_l,0,0,lw,lh,f->ifmt,isz,bc);
           else if(t->target==GL_TEXTURE_2D_ARRAY || t->target==GL_TEXTURE_CUBE_MAP_ARRAY) glCompressedTexSubImage3D(t->target,gl_l,0,0,layer,lw,lh,1,f->ifmt,isz,bc);
           else if(t->target==GL_TEXTURE_CUBE_MAP) glCompressedTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+layer,gl_l,0,0,lw,lh,f->ifmt,isz,bc);

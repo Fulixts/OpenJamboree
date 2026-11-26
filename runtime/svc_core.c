@@ -139,8 +139,9 @@ static int am_appfn(SvcObj* o, IpcCtx* c){         /* IApplicationFunctions */
       return RC(128,2); }
     case 10: out_obj(c,am_storage_new(in64(c,0),NULL)); return 0;
     case 20: out64(c,0); return 0;                                     /* EnsureSaveData */
-    case 21: { const char* l[]={"ja","en-US","fr","de","it","es","zh-CN","ko","nl","pt","ru","zh-TW","en-GB","fr-CA","es-419"};
-      u64 v=0; const char* s=l[g_opt_lang%15]; memcpy(&v,s,strlen(s)); out64(c,v); return 0; }
+    case 21: { /* GetDesiredLanguage: same 18 codes as set:GetLanguageCode, 17 = pt-BR (Jamboree has message~ptBR) */
+      const char* l[]={"ja","en-US","fr","de","it","es","zh-CN","ko","nl","pt","ru","zh-TW","en-GB","fr-CA","es-419","zh-Hans","zh-Hant","pt-BR"};
+      u64 v=0; const char* s=l[g_opt_lang%18]; memcpy(&v,s,strlen(s)); out64(c,v); return 0; }
     case 25: out64(c,0); return 0;                                     /* ExtendSaveData */
     case 26: out64(c,0x4000000); out64(c,0x4000000); return 0;       /* GetSaveDataSize */
     case 110: out32(c,0); return 0;

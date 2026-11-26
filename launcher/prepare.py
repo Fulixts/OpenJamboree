@@ -91,6 +91,20 @@ def main():
     for f in (GAME + '.exe', GAME + '_code.dll'):
         if not os.path.isfile(os.path.join(games, f)): raise SystemExit('the build left no %s' % f)
 
+    # 5) extras: PlayStation/Xbox pads (SDL3.dll next to the game) and the 1 second opening for skip_intro,
+    #    cut from the player's own movie (the menu's "Pular o vídeo de abertura" switches between the two)
+    progress(0.95, 'Pads and the short opening movie')
+    import shutil
+    sdl = os.path.join(HERE, 'tools', 'SDL3.dll')
+    if os.path.isfile(sdl): shutil.copy2(sdl, os.path.join(games, 'SDL3.dll'))
+    movie = os.path.join(dump, 'romfs', 'movie', 'flow', 'op', 'movie', 'bq_op.mp4')
+    short = os.path.join(games, GAME + '_overlay', 'skip_intro', 'movie', 'flow', 'op', 'movie', 'bq_op.mp4')
+    if os.path.isfile(movie):
+        os.makedirs(os.path.dirname(short), exist_ok=True)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import trim_intro
+        trim_intro.trim(movie, short, 60)
+
     json.dump({'inputs': inputs, 'main_sha256': h, 'version': ver}, open(marker, 'w'), indent=1)
     progress(1.0, 'Ready')
 

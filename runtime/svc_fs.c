@@ -38,6 +38,25 @@ static int add_dir(const char* name, int parent){ if(ndn==capdn){ capdn=capdn?ca
 static int add_file(const char* name, int parent, u64 size, const char* host){ if(nfn==capfn){ capfn=capfn?capfn*2:1024; fn=realloc(fn,sizeof(FNode)*capfn); }
   FNode* f=&fn[nfn]; f->name=strdup(name); f->parent=parent; f->next_sib=-1; f->size=size; f->host=strdup(host); return nfn++; }
 
+/* overlay layers (OpenJamboree): folders laid over the romfs like LayeredFS. a file at <layer>/<romfs path> is read
+   instead of the game's own one; the last layer wins. used for skip_intro (a short copy of the opening movie made by
+   the setup from the player's own dump) and, later, mods. only replaces files the game already has */
+static char g_layers[8][1024]; static int g_nlayers, g_layer_hits;
+
+static const char* layer_pick(const char* host, u64* size){
+  const char* rel=host+g_romdir_len;
+  static char q[2200];
+  for(int i=g_nlayers-1;i>=0;i--){ snprintf(q,sizeof q,"%s%s",g_layers[i],rel); u64 s=plat_file_size(q);
+    if(s){ *size=s; g_layer_hits++; LOG("romfs layer: %s <- %s\n",rel,g_layers[i]); return q; } }
+  return host; }
+
+static void layers_init(void){
+  extern const char* ini_value(const char*, const char*);
+  if(strcmp(ini_value("skip_intro","1"),"0")){
+    char p[1024]; snprintf(p,sizeof p,"%s%s_overlay/skip_intro",g_exedir,g_exename);
+    if(plat_is_dir(p)){ snprintf(g_layers[g_nlayers++],1024,"%s",p); LOG("romfs: skip_intro on (%s)\n",p); }
+    else LOG("romfs: skip_intro is on but %s is missing (run the setup again)\n",p); } }
+
 static int cmpname(const void* a, const void* b){ return strcmp(*(char* const*)a,*(char* const*)b); }
 
 static void scan(const char* host, int di){
@@ -55,7 +74,8 @@ static void scan(const char* host, int di){
     for(int k=0;k<m;k++){ int i=0; while(names[i]!=idx[k]) i++;
       char p[2048]; snprintf(p,sizeof p,"%s/%s",host,names[i]);
       if(pass==0){ int c=add_dir(names[i],di); if(lastd<0) dn[di].first_child=c; else dn[lastd].next_sib=c; lastd=c; scan(p,c); }
-      else { int f=add_file(names[i],di,sizes[i],p); if(lastf<0) dn[di].first_file=f; else fn[lastf].next_sib=f; lastf=f; } }
+      else { u64 sz=sizes[i]; const char* h=layer_pick(p,&sz);
+        int f=add_file(names[i],di,sz,h); if(lastf<0) dn[di].first_file=f; else fn[lastf].next_sib=f; lastf=f; } }
     free(idx);
   }
   for(int i=0;i<n;i++) free(names[i]); free(names); free(isdir); free(sizes);
@@ -103,6 +123,7 @@ static void romfs_build(const char* dir){
 
 void romfs_init(void){
   pm_init(&g_romlock);
+  layers_init();
   char p[1200];
   if(g_romfs_dir_override[0] && plat_is_dir(g_romfs_dir_override)){ LOG("RomFS: %s\n",g_romfs_dir_override); romfs_build(g_romfs_dir_override); return; }
   snprintf(p,sizeof p,"%sromfs.bin",g_dumpdir); rraw=fopen(p,"rb");

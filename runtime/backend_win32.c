@@ -23,8 +23,9 @@ static int g_controls_open;
 int g_background;   /* SWR_BACKGROUND=1: tests run off-screen without taking focus (win_thread); audio.c mutes */
 static u64 g_mouse_time;
 static i32 g_mouse_rx, g_mouse_ry;
+extern int menu_is_open(void);
 static void mouse_capture(void){
-  int active=g_mouse_mode && !g_controls_open && GetForegroundWindow()==g_hwnd && !IsIconic(g_hwnd);
+  int active=g_mouse_mode && !g_controls_open && !menu_is_open() &&GetForegroundWindow()==g_hwnd && !IsIconic(g_hwnd);
   if(active){ RECT r; GetClientRect(g_hwnd,&r); MapWindowPoints(g_hwnd,NULL,(POINT*)&r,2); ClipCursor(&r); }
   else ClipCursor(NULL);
   InterlockedExchange(&g_mouse_dx,0); InterlockedExchange(&g_mouse_dy,0);
@@ -92,6 +93,61 @@ static void xinput_load(void){
   const char* dl[]={"xinput1_4.dll","xinput1_3.dll","xinput9_1_0.dll"};
   for(int i=0;i<3 && !xget;i++){ HMODULE h=LoadLibraryA(dl[i]); if(h) xget=(XGetState)GetProcAddress(h,"XInputGetState"); }
 }
+
+/* PlayStation (DualSense, DualShock 4), Xbox, Switch Pro and other pads through SDL3 (zlib license), loaded at run
+   time from SDL3.dll next to the game like XInput. its state is turned into XInput's layout so the mapping below
+   stays the same; without SDL3.dll only XInput pads work. all SDL calls happen on the thread that runs video_poll */
+typedef int (*SdlInit)(unsigned);
+typedef unsigned* (*SdlGetPads)(int*);
+typedef void* (*SdlOpen)(unsigned);
+typedef int (*SdlConnected)(void*);
+typedef void (*SdlUpdate)(void);
+typedef int (*SdlButton)(void*, int);
+typedef short (*SdlAxis)(void*, int);
+typedef void (*SdlFree)(void*);
+typedef void (*SdlClose)(void*);
+typedef const char* (*SdlName)(void*);
+typedef int (*SdlHint)(const char*, const char*);
+static struct { SdlInit init; SdlGetPads pads; SdlOpen open; SdlConnected conn; SdlUpdate update; SdlButton btn; SdlAxis axis;
+  SdlFree free; SdlClose close; SdlName name; SdlHint hint; void* pad; u64 next_scan; int ok; } sdl;
+
+static void sdl_load(void){
+  HMODULE h=LoadLibraryA("SDL3.dll"); if(!h){ LOG("pads: no SDL3.dll, XInput pads only (PlayStation pads need SDL3.dll)\n"); return; }
+#define SDLF(f,t,n) sdl.f=(t)GetProcAddress(h,n)
+  SDLF(init,SdlInit,"SDL_Init"); SDLF(pads,SdlGetPads,"SDL_GetGamepads"); SDLF(open,SdlOpen,"SDL_OpenGamepad");
+  SDLF(conn,SdlConnected,"SDL_GamepadConnected"); SDLF(update,SdlUpdate,"SDL_UpdateGamepads"); SDLF(btn,SdlButton,"SDL_GetGamepadButton");
+  SDLF(axis,SdlAxis,"SDL_GetGamepadAxis"); SDLF(free,SdlFree,"SDL_free"); SDLF(close,SdlClose,"SDL_CloseGamepad"); SDLF(name,SdlName,"SDL_GetGamepadName");
+  SDLF(hint,SdlHint,"SDL_SetHint");
+#undef SDLF
+  if(!sdl.init||!sdl.pads||!sdl.open||!sdl.update||!sdl.btn||!sdl.axis){ LOG("pads: SDL3.dll is not SDL 3, ignored\n"); return; }
+  if(sdl.hint){ sdl.hint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS","1"); sdl.hint("SDL_JOYSTICK_HIDAPI_PS5_RUMBLE","0"); }
+  if(!sdl.init(0x00002000u /* SDL_INIT_GAMEPAD */)){ LOG("pads: SDL_Init failed, XInput pads only\n"); return; }
+  sdl.ok=1; LOG("pads: SDL3 on (PlayStation, Xbox, Switch Pro and other pads)\n"); }
+
+/* fills an XInput state from the first SDL pad, 0 = none */
+static int sdl_read(XST* s){
+  if(!sdl.ok) return 0;
+  sdl.update();
+  if(sdl.pad && sdl.conn && !sdl.conn(sdl.pad)){ if(sdl.close) sdl.close(sdl.pad); sdl.pad=NULL; LOG("pads: disconnected\n"); }
+  if(!sdl.pad){ u64 now=plat_ns(); if(now<sdl.next_scan) return 0; sdl.next_scan=now+1000000000ull;
+    int n=0; unsigned* ids=sdl.pads(&n); if(ids && n>0){ sdl.pad=sdl.open(ids[0]); if(sdl.pad) LOG("pads: %s\n",sdl.name? sdl.name(sdl.pad) : "connected"); }
+    if(ids && sdl.free) sdl.free(ids);
+    if(!sdl.pad) return 0; }
+  void* p=sdl.pad; WORD x=0;
+  /* SDL buttons: 0 south 1 east 2 west 3 north 4 back 5 guide 6 start 7 lstick 8 rstick 9 lshoulder 10 rshoulder
+     11 up 12 down 13 left 14 right. on a PlayStation pad south = cross, east = circle, west = square, north = triangle */
+  static const WORD map[15]={0x1000,0x2000,0x4000,0x8000,0x0020,0,0x0010,0x0040,0x0080,0x0100,0x0200,0x0001,0x0002,0x0004,0x0008};
+  for(int i=0;i<15;i++) if(map[i] && sdl.btn(p,i)) x|=map[i];
+  memset(s,0,sizeof *s); XGP* g=&s->Gamepad; g->wButtons=x;
+  short ly=sdl.axis(p,1), ry=sdl.axis(p,3);
+  g->sThumbLX=sdl.axis(p,0); g->sThumbLY= ly==-32768? 32767 : -ly; g->sThumbRX=sdl.axis(p,2); g->sThumbRY= ry==-32768? 32767 : -ry;
+  g->bLeftTrigger=(BYTE)(sdl.axis(p,4)>>7); g->bRightTrigger=(BYTE)(sdl.axis(p,5)>>7);
+  return 1; }
+
+/* in-game menu (menu.cpp) */
+extern int menu_is_open(void); extern void menu_key(int,int); extern void menu_char(unsigned); extern void menu_mouse_pos(int,int);
+extern void menu_mouse_button(int,int); extern void menu_wheel(float); extern void menu_pad(unsigned,int); extern void menu_draw_gl(void);
+#define UI_BLOCK (g_controls_open || menu_is_open())
 
 static void set_fullscreen(int on){
   DWORD st=GetWindowLong(g_hwnd,GWL_STYLE);
@@ -275,11 +331,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   case WM_KEYDOWN:
     /* a held key auto repeats (bit 30), the one shot actions below only fire on the first press or holding F7
        would start and stop the recording every frame */
-    /* Esc quits only when held (1.5 s): a stray press used to close the game. the title shows the countdown */
-    if(w==VK_ESCAPE){
-      if(!(l&(1<<30)) || !g_esc_t0){ g_esc_t0=plat_ns(); char t[300]; snprintf(t,sizeof t,"%s  |  Hold Esc to quit",g_title); SetWindowTextA(h,t); return 0; }
-      if(plat_ns()-g_esc_t0>=1500000000ull){ LOG("window: Esc held, quitting\n"); g_quit=1; }
-      return 0; }
+    /* Esc opens and closes the in-game menu (menu.cpp); quitting is a button there. while the menu is open it gets
+       the keys and the game gets none */
+    if(w==VK_ESCAPE){ if(!(l&(1<<30))){ int was=menu_is_open(); menu_key(VK_ESCAPE,1); keys_held=0; mouse_capture(); (void)was; } return 0; }
+    if(menu_is_open()){ menu_key((int)w,1); return 0; }
     if((l&(1<<30)) && (w==VK_F1||w==VK_F3||w==VK_F4||w==VK_F5||w==VK_F7||w==VK_F8||w==VK_F11)) return 0;
     if(w==VK_F11){ set_fullscreen(!g_fullscreen); return 0; }
     if(w==VK_F1){ show_controls(); return 0; }
@@ -292,7 +347,13 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
       kernel_dump_threads(); gpu_gl_dump_rts(); return 0; }
     if(w==VK_F4){ g_opt_fps= g_opt_fps==0? 1 : 0; char t[64]; snprintf(t,sizeof t,"FPS limit: %s",g_opt_fps==0? "unlimited" : "60"); SetWindowTextA(h,t); { extern void ini_set(const char*, const char*); char v[8]; snprintf(v,sizeof v,"%d",g_opt_fps); ini_set("fps_limit",v); } return 0; }
     keys_held|=keymap(w); return 0;
-  case WM_SYSKEYUP: case WM_KEYUP: if(w==VK_ESCAPE){ g_esc_t0=0; SetWindowTextA(h,g_title); } keys_held&=~keymap(w); return 0;
+  case WM_SYSKEYUP: case WM_KEYUP: if(w==VK_ESCAPE) return 0; if(menu_is_open()) menu_key((int)w,0); keys_held&=~keymap(w); return 0;
+  case WM_CHAR: if(menu_is_open() && w>=32) menu_char((unsigned)w); return 0;
+  case WM_MOUSEMOVE: if(menu_is_open()) menu_mouse_pos((short)LOWORD(l),(short)HIWORD(l)); break;
+  case WM_LBUTTONDOWN: case WM_LBUTTONUP: if(menu_is_open()){ menu_mouse_pos((short)LOWORD(l),(short)HIWORD(l)); menu_mouse_button(0,m==WM_LBUTTONDOWN); return 0; } break;
+  case WM_RBUTTONDOWN: case WM_RBUTTONUP: if(menu_is_open()){ menu_mouse_button(1,m==WM_RBUTTONDOWN); return 0; } break;
+  case WM_MOUSEWHEEL: if(menu_is_open()){ menu_wheel((short)HIWORD(w)/120.0f); return 0; } break;
+  case WM_APP+20: set_fullscreen((int)w); return 0;   /* the menu's fullscreen box */
   case WM_KILLFOCUS: keys_held=0; ClipCursor(NULL); InterlockedExchange(&g_mouse_dx,0); InterlockedExchange(&g_mouse_dy,0); return 0;
   case WM_INPUT: {
     RAWINPUT raw; UINT size=sizeof raw;
@@ -302,7 +363,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   }
   case WM_APP+8: { char t[300]; if(w) snprintf(t,sizeof t,"%s  |  RECORDING (F7 to stop)",g_title); else snprintf(t,sizeof t,"%s  |  Video saved in the recordings folder",g_title); SetWindowTextA(h,t); return 0; }
   case WM_APP+7: { char t[160]; if(w) snprintf(t,sizeof t,"%s  |  LSFG ON x%d (frame generation)",g_title,(int)l); else snprintf(t,sizeof t,"%s  |  LSFG standby",g_title); SetWindowTextA(h,t); return 0; }
-  case WM_SETCURSOR: if((g_fullscreen || (g_mouse_mode && !g_controls_open && GetForegroundWindow()==h)) && LOWORD(l)==HTCLIENT){ SetCursor(NULL); return TRUE; } break;
+  case WM_SETCURSOR: if(menu_is_open()){ if(LOWORD(l)==HTCLIENT){ SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; } break; }
+    if((g_fullscreen || (g_mouse_mode && !g_controls_open && GetForegroundWindow()==h)) && LOWORD(l)==HTCLIENT){ SetCursor(NULL); return TRUE; } break;
   }
   return DefWindowProcA(h,m,w,l);
 }
@@ -375,7 +437,12 @@ void* backend_gl_proc(const char* n){
   if(!p || p==(void*)1 || p==(void*)2 || p==(void*)3 || p==(void*)-1){ static HMODULE gl; if(!gl) gl=LoadLibraryA("opengl32.dll"); p=(void*)GetProcAddress(gl,n); }
   return p; }
 
-void backend_gl_swap(void){ SwapBuffers(g_hdc); }
+void backend_gl_swap(void){ menu_draw_gl(); SwapBuffers(g_hdc); }
+
+/* for the in-game menu */
+void backend_request_fullscreen(int on){ PostMessageA(g_hwnd,WM_APP+20,(WPARAM)(on!=0),0); }
+int backend_is_fullscreen(void){ return g_fullscreen; }
+void backend_request_quit(void){ LOG("window: quit from the menu\n"); g_quit=1; }
 
 /* each compile thread takes the next shared context */
 int backend_gl_worker_current(void){ int k=__atomic_fetch_add(&g_wnext,1,__ATOMIC_ACQ_REL); return k<3 && g_wctx[k] && wglMakeCurrent(g_hdc,g_wctx[k]); }
@@ -389,12 +456,16 @@ static i32 axis(u64 b, int neg, int pos){ return ((b>>pos)&1? 32767:0) - ((b>>ne
 static i32 dz(i32 v){ return (v>-7000 && v<7000)? 0 : v; }
 
 void video_poll(void){
-  int focused=GetForegroundWindow()==g_hwnd && !g_controls_open;
+  static int sdl_tried; if(!sdl_tried){ sdl_tried=1; sdl_load(); }
+  int focused=GetForegroundWindow()==g_hwnd && !UI_BLOCK;
+  /* the pad also drives the menu: View+Menu (Share+Options on PlayStation) opens it */
+  { XST ms; int got=0; if(GetForegroundWindow()==g_hwnd && !g_background){ got=sdl_read(&ms); if(!got && xget) for(DWORD i=0;i<4 && !got;i++) got=!xget(i,&ms); }
+    menu_pad(got? ms.Gamepad.wButtons : 0, got); if(menu_is_open()) focused=0; }
   /* SWR_INPUT_UNFOCUSED=1 (automated tests): keys posted to the window count even when it isn't in front, since
      Windows won't let a background script bring it forward while someone uses another window */
   static int unfocused_input=-1; if(unfocused_input<0){ const char* e=getenv("SWR_INPUT_UNFOCUSED"); unfocused_input= (e && *e=='1') || g_background; }
   if(g_background) focused=0;   /* the real pad and mouse belong to whoever is using the PC; only posted keys count */
-  u64 k=(focused || (unfocused_input && !g_controls_open))?keys_held:0, b=k&0xFFFFull;
+  u64 k=(focused || (unfocused_input && !UI_BLOCK))?keys_held:0, b=k&0xFFFFull;
   i32 lx=axis(k,40,42), ly=axis(k,43,41), rx=axis(k,44,46), ry=axis(k,47,45);
   if(g_mouse_mode){
     u64 now=plat_ns(); u64 elapsed=now-g_mouse_time;
@@ -410,8 +481,11 @@ void video_poll(void){
     rx=(g_mouse_invert&1)?-g_mouse_rx:g_mouse_rx; ry=(g_mouse_invert&2)?-g_mouse_ry:g_mouse_ry;
   }
   { extern int g_pad_icons_xbox; g_pad_icons_xbox=!g_pad_by_position; }   /* the on-screen button diamonds follow the mapping (gpu_gl.c) */
-  if(xget && focused){
-    for(DWORD i=0;i<4;i++){ XST s; if(xget(i,&s)) continue; XGP* g=&s.Gamepad; WORD x=g->wButtons;
+  if((xget || sdl.ok) && focused){
+    for(DWORD i=0;i<5;i++){ XST s;
+      if(i==0){ if(!sdl_read(&s)) continue; }   /* SDL3 first: PlayStation and Xbox pads */
+      else if(!xget || xget(i-1,&s)) continue;
+      XGP* g=&s.Gamepad; WORD x=g->wButtons;
       /* by label (default): xbox A = A (confirm), B = B, X = X, Y = Y. pad_buttons=1 maps by position like a Switch
          pad instead: A right (xbox B), B bottom (xbox A), X top (xbox Y), Y left (xbox X) */
       if(g_pad_by_position){ if(x&0x2000) b|=1<<0; if(x&0x1000) b|=1<<1; if(x&0x8000) b|=1<<2; if(x&0x4000) b|=1<<3; }

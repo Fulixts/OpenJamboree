@@ -22,6 +22,9 @@ foreach ($f in (git ls-files)) {
 Copy-Item -Recurse python (Join-Path $stage 'python')
 Get-ChildItem (Join-Path $stage 'python') -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 Copy-Item tools\nsp_extract\out\nsp_extract.exe (Join-Path $stage 'tools\nsp_extract.exe')
+# SDL3 (zlib) for PlayStation / Xbox pads, with its license
+Copy-Item tools\sdl3\SDL3.dll (Join-Path $stage 'tools\SDL3.dll')
+Copy-Item tools\sdl3\LICENSE.txt (Join-Path $stage 'tools\SDL3-LICENSE.txt')
 
 # nothing from the game may be in the zip
 $bad = Get-ChildItem $stage -Recurse -File | Where-Object { $_.Extension -in '.nsp','.nca','.xci','.nso','.nro','.keys' -or $_.Name -in 'main','main.npdm' }

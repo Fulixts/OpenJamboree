@@ -118,3 +118,9 @@ dist/
 tools/nsp_extract/bin/
 tools/nsp_extract/obj/
 tools/nsp_extract/out/
+
+# ---- OpenJamboree runtime output ----
+*_overlay/
+*_texcache/
+performance.txt
+frames.csv
