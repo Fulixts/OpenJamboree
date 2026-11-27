@@ -4,7 +4,7 @@
 # The key times count from the moment the title music starts (SM_BGM_TITLE in the log), so slow first boots (shader
 # compiles) don't break it. Shots go to _work/shots/online_*.png.
 #   powershell -File _work/online_probe.ps1 [-Exe path] [-After 75] [-Trace]
-param([string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuperMarioPartyJamboree.exe"), [int]$After = 150, [switch]$Trace)
+param([string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuperMarioPartyJamboree.exe"), [int]$After = 150, [switch]$Trace, [switch]$Continue, [switch]$NoKill)
 $ErrorActionPreference = "Stop"
 # seconds after the title music: keys (vk, "+" = together, "@ms" = hold)
 # phase 1 counts from the title music, phase 2 from the map music (SM_BGM_MENU_MAP): loads before the map vary a lot
@@ -24,7 +24,8 @@ function Send-Keys($h, $spec) {
   foreach ($v in $vks) { $sc = [PW]::MapVirtualKey($v, 0); [PW]::PostMessage($h, 0x101, [IntPtr]$v, [IntPtr]([int64]0xC0000001 -bor ($sc -shl 16))) | Out-Null } }
 $dir = Split-Path -Parent $Exe; $name = [IO.Path]::GetFileNameWithoutExtension($Exe); $log = Join-Path $dir "$name.log"
 $out = Join-Path $PSScriptRoot "shots"; New-Item -ItemType Directory -Force $out | Out-Null
-Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+# -NoKill: a second instance (another folder) next to one already running, for two-player tests
+if (-not $NoKill) { Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force }
 $env:SWR_BACKGROUND = "1"; $env:SWR_INPUT_UNFOCUSED = "1"
 if ($Trace) { $env:SWR_TRACE_DYN = '8006000-b000000,89e7300-89e7308'; $env:SWR_DUMP_GRPC = '1' }
 $p = Start-Process -FilePath $Exe -WorkingDirectory $dir -PassThru
@@ -35,7 +36,7 @@ while (-not $title -and ((Get-Date) - $t0).TotalSeconds -lt 180 -and -not $p.Has
   if (Test-Path $log) { if (Select-String -Path $log -Pattern 'SM_BGM_TITLE' -Quiet) { $title = Get-Date } } }
 if (-not $title) { Write-Output "no title screen after 180 s"; if (-not $p.HasExited) { Stop-Process $p -Force }; exit 1 }
 Write-Output "title at $([int]($title - $t0).TotalSeconds) s"
-$si = 0; $map = $null; $stage = 0; $last = 0; $done = $false; $phase = 0; $mapA = -100
+$si = 0; $map = $null; $stage = 0; $last = 0; $done = $false; $phase = 0; $mapA = -100; $lastA = 0
 Add-Type -AssemblyName System.Drawing
 function Take-Shot($h, $tag) {
   $cap = Join-Path $dir "captures"; $before = @(Get-ChildItem "$cap\F8_*.png" -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -61,7 +62,10 @@ while (((Get-Date) - $title).TotalSeconds -lt $After -and -not $p.HasExited) {
   # anything else (map, notices) -> A
   if (-not $done -and (Seen "internet request accepted")) { $done = $true; Write-Output "the game asked for the internet at $([int]$el) s" }
   # after Conectar: one shot every 15 s, no keys, to see where the game stops
-  if ($done) { if ($el - $last -ge 15) { $last = $el; $f = Take-Shot $h ("online_after_" + [int]$el); if ($f) { Write-Output "shot $f" } }; continue }
+  # with -Continue, A every 6 s goes on (board choice, matchmaking)
+  if ($done) {
+    if ($Continue -and $el - $lastA -ge 6) { $lastA = $el; Send-Keys $h "58@600" }
+    if ($el - $last -ge 15) { $last = $el; $f = Take-Shot $h ("online_after_" + [int]$el); if ($f) { Write-Output "shot $f" } }; continue }
   if ($el - $last -lt 2.5) { continue }
   $last = $el; $shot = Take-Shot $h ("online_" + $si); $si++
   if (-not $shot) { continue }

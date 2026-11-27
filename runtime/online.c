@@ -62,35 +62,59 @@ static int tls_init(void){
   return 1; }
 
 /* ============================================================ one connection */
-typedef struct Stream { int32_t id; char path[160]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status; struct Stream* next; } Stream;
+typedef struct Stream { int32_t id; char path[160], auth[96]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status;
+  void* track; int fin, deferred; struct Stream* next; } Stream;   /* track: a server stream (npln_stream_open) */
 typedef struct { SOCKET s; mbedtls_ssl_context ssl; nghttp2_session* h2; Stream* st; } Conn;
 
 static int bio_send(void* ctx, const unsigned char* b, size_t n){ int r=send(*(SOCKET*)ctx,(const char*)b,(int)n,0); return r<0? MBEDTLS_ERR_NET_SEND_FAILED : r; }
 static int bio_recv(void* ctx, unsigned char* b, size_t n){ int r=recv(*(SOCKET*)ctx,(char*)b,(int)n,0); return r<0? MBEDTLS_ERR_NET_RECV_FAILED : r==0? MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY : r; }
+
+extern void* npln_stream_open(const char* path, const u8* req, size_t n);
+extern int npln_stream_poll(void* h, u8** out, size_t* outn, int* fin);
+extern void npln_stream_close(void* h);
 
 static Stream* stream_get(Conn* c, int32_t id, int make){
   for(Stream* s=c->st;s;s=s->next) if(s->id==id) return s;
   if(!make) return NULL;
   Stream* s=calloc(1,sizeof *s); s->id=id; s->next=c->st; c->st=s; return s; }
 static void stream_drop(Conn* c, int32_t id){
-  for(Stream** p=&c->st;*p;p=&(*p)->next) if((*p)->id==id){ Stream* s=*p; *p=s->next; free(s->body); free(s->resp); free(s); return; } }
+  for(Stream** p=&c->st;*p;p=&(*p)->next) if((*p)->id==id){ Stream* s=*p; *p=s->next; if(s->track) npln_stream_close(s->track); free(s->body); free(s->resp); free(s); return; } }
 
 #define NV(n,v) { (uint8_t*)(n), (uint8_t*)(v), sizeof(n)-1, strlen(v), NGHTTP2_NV_FLAG_NONE }
 
 /* response body: the gRPC message (5-byte prefix + protobuf), then the trailers with grpc-status */
 static nghttp2_ssize resp_read(nghttp2_session* h, int32_t id, uint8_t* buf, size_t len, uint32_t* fl, nghttp2_data_source* src, void* u){ (void)u;
   Stream* s=src->ptr; size_t k=s->rn-s->ro; if(k>len) k=len; memcpy(buf,s->resp+s->ro,k); s->ro+=k;
+  if(s->track && s->ro>=s->rn && !s->fin){ if(k) return (nghttp2_ssize)k; s->deferred=1; return NGHTTP2_ERR_DEFERRED; }
   if(s->ro>=s->rn){ *fl|=NGHTTP2_DATA_FLAG_EOF|NGHTTP2_DATA_FLAG_NO_END_STREAM;
     char st[12]; snprintf(st,sizeof st,"%d",s->status);
     nghttp2_nv t[]={ { (uint8_t*)"grpc-status",(uint8_t*)st,11,strlen(st),NGHTTP2_NV_FLAG_NONE } };
     nghttp2_submit_trailer(h,id,t,1); }
   return (nghttp2_ssize)k; }
 
+/* appends the server stream's new messages (5-byte gRPC prefix each) and wakes the data provider */
+static void stream_tick(Conn* c, Stream* s){
+  u8* m; size_t mn; int fin=0;
+  while(!s->fin && npln_stream_poll(s->track,&m,&mn,&fin)){
+    if(s->ro && s->ro==s->rn){ s->ro=s->rn=0; }
+    s->resp=realloc(s->resp,s->rn+5+mn); u8* p=s->resp+s->rn;
+    p[0]=0; p[1]=(u8)(mn>>24); p[2]=(u8)(mn>>16); p[3]=(u8)(mn>>8); p[4]=(u8)mn; if(mn) memcpy(p+5,m,mn); s->rn+=5+mn; free(m);
+    if(fin) break; }
+  if(fin) s->fin=1;
+  if(s->deferred && (s->rn>s->ro || s->fin)){ s->deferred=0; nghttp2_session_resume_data(c->h2,s->id); } }
+
 /* a complete request: answer it from npln.c, or UNIMPLEMENTED (logged) for methods not written yet */
 extern int npln_call(const char* path, const u8* req, size_t n, int* status, u8** out, size_t* outn);
+extern void npln_set_caller(const char* authorization);
 static void grpc_call(Conn* c, Stream* s){
   const u8* msg= s->n>=5? s->body+5 : (const u8*)""; size_t mn= s->n>=5? s->n-5 : 0;
   int st=0; u8* out=NULL; size_t on=0;
+  npln_set_caller(s->auth);
+  if((s->track=npln_stream_open(s->path,msg,mn))){
+    LOG("online: grpc %s (stream)\n",s->path);
+    nghttp2_nv h[]={ NV(":status","200"), NV("content-type","application/grpc") };
+    nghttp2_data_provider2 dp; dp.source.ptr=s; dp.read_callback=resp_read;
+    stream_tick(c,s); nghttp2_submit_response2(c->h2,s->id,h,2,&dp); return; }
   if(npln_call(s->path,msg,mn,&st,&out,&on)<0){
     char hex[3*48+1]={0}; size_t show= mn>48? 48 : mn; for(size_t i=0;i<show;i++) sprintf(hex+i*3,"%02x ",msg[i]);
     LOG("online: grpc %s (%u bytes) not implemented: %s\n",s->path,(unsigned)mn,hex);
@@ -111,6 +135,7 @@ static int on_begin_headers(nghttp2_session* h, const nghttp2_frame* f, void* u)
   if(f->hd.type==NGHTTP2_HEADERS && f->headers.cat==NGHTTP2_HCAT_REQUEST) stream_get((Conn*)u,f->hd.stream_id,1); return 0; }
 static int on_header(nghttp2_session* h, const nghttp2_frame* f, const uint8_t* n, size_t nl, const uint8_t* v, size_t vl, uint8_t fl, void* u){ (void)h; (void)fl;
   Stream* s=stream_get((Conn*)u,f->hd.stream_id,0); if(!s) return 0;
+  if(nl==13 && !memcmp(n,"authorization",13)){ size_t k= vl<sizeof s->auth-1? vl : sizeof s->auth-1; memcpy(s->auth,v,k); s->auth[k]=0; }
   if(nl==5 && !memcmp(n,":path",5)){ size_t k= vl<sizeof s->path-1? vl : sizeof s->path-1; memcpy(s->path,v,k); s->path[k]=0; }
   return 0; }
 static int on_data(nghttp2_session* h, uint8_t fl, int32_t id, const uint8_t* d, size_t n, void* u){ (void)h; (void)fl;
@@ -147,6 +172,13 @@ static void conn_thread(void* arg){
   if(flush_h2(c)) goto done;
   u8 buf[16384];
   for(;;){
+    /* wake every 200 ms while a server stream is open, to send its news */
+    int streams=0; for(Stream* s=c->st;s;s=s->next) if(s->track) streams=1;
+    if(streams && !mbedtls_ssl_get_bytes_avail(&c->ssl)){
+      fd_set rs; FD_ZERO(&rs); FD_SET(c->s,&rs); struct timeval tv={0,200000};
+      if(select((int)c->s+1,&rs,NULL,NULL,&tv)==0){
+        for(Stream* s=c->st;s;s=s->next) if(s->track) stream_tick(c,s);
+        if(flush_h2(c)) break; continue; } }
     int n=mbedtls_ssl_read(&c->ssl,buf,sizeof buf);
     if(n==MBEDTLS_ERR_SSL_WANT_READ || n==MBEDTLS_ERR_SSL_WANT_WRITE) continue;
 #ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET

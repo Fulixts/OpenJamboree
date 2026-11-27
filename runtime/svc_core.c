@@ -557,16 +557,51 @@ static int acc_async(SvcObj* o, IpcCtx* c){ (void)o;
   }
   return 0; }
 
+/* the network service account this PC plays online as: one id per PC (online_user in the .ini, else the computer's
+   name), so the host's server tells the players apart. the id token is a well-formed JWT with an unsigned placeholder
+   signature: the SDK may decode it, only our own server reads it */
+extern const char* ini_value(const char*, const char*);
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+static u64 online_account_id(void){
+  static u64 id; if(id) return id;
+  char who[128]; snprintf(who,sizeof who,"%s",ini_value("online_user",""));
+  if(!*who){
+#ifdef _WIN32
+    DWORD k=sizeof who; if(!GetComputerNameA(who,&k)) snprintf(who,sizeof who,"pc");
+#else
+    if(gethostname(who,sizeof who)) snprintf(who,sizeof who,"pc");
+#endif
+  }
+  u64 h=1469598103934665603ull; for(const char* p=who;*p;p++){ h^=(u8)*p; h*=1099511628211ull; }
+  id=h|1; return id; }
+static void b64url(const u8* d, size_t n, char* o){
+  static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"; size_t k=0;
+  for(size_t i=0;i<n;i+=3){ u32 v=(u32)d[i]<<16 | (i+1<n? (u32)d[i+1]<<8 : 0) | (i+2<n? d[i+2] : 0);
+    o[k++]=t[v>>18&63]; o[k++]=t[v>>12&63]; if(i+1<n) o[k++]=t[v>>6&63]; if(i+2<n) o[k++]=t[v&63]; }
+  o[k]=0; }
+static const char* online_id_token(void){
+  static char tok[1400]; if(*tok) return tok;
+  char js[700], body[1000]; unsigned long long id=(unsigned long long)online_account_id();
+  snprintf(js,sizeof js,"{\"iss\":\"https://e0d67c509fb203858ebcb2fe3f88c2aa.baas.nintendo.com\",\"sub\":\"%016llx\",\"aud\":\"ed9e2f05d286f7b8\","
+    "\"iat\":1764115200,\"exp\":4102444800,\"jti\":\"00000000-0000-4000-8000-%012llx\",\"typ\":\"id_token\",\"bs:did\":\"4f4a414d01020304\","
+    "\"nintendo\":{\"ai\":\"0100965017338000\",\"ap\":\"0100965017338000\",\"na\":{\"id\":\"%016llx\"},\"ndc\":\"0\",\"nl\":\"pt-BR\",\"pfcc\":\"BR\",\"nn\":\"Player\"}}",
+    id,id&0xFFFFFFFFFFFFull,id);
+  b64url((const u8*)js,strlen(js),body);
+  snprintf(tok,sizeof tok,"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9wZW5qYW1ib3JlZSJ9.%s.b3BlbmphbWJvcmVlLWxvY2FsLXNpZ25hdHVyZS0wMDAw",body);
+  return tok; }
+
 static int accmgr_disp(SvcObj* o, IpcCtx* c){
   switch(c->cmd){
     case 0: out8(c,(u8)online_on()); return 0;          /* CheckAvailability: yes in online mode */
-    case 1: out64(c,0x0123456789ABCDEFull); return 0;   /* GetAccountId */
+    case 1: out64(c,online_account_id()); return 0;     /* GetAccountId */
     /* online (docs/ONLINE_SPEC.md): the game asks for the network service account's id token before it connects.
        there is no Nintendo account here, so the request finishes at once and the token is a fixed placeholder that
        our own server (the host's game) accepts, like OpenSmash's "ssbu-port" token */
     case 2: LOG("online: id token requested\n"); out_obj(c,svcobj_new("IAsyncContext",acc_async,0)); return 0;   /* EnsureIdTokenCacheAsync */
-    case 3: { u64 a,s; buf_out(c,0,&a,&s); static const char tok[]="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9wZW5qYW1ib3JlZSJ9.eyJpc3MiOiJodHRwczovL2UwZDY3YzUwOWZiMjAzODU4ZWJjYjJmZTNmODhjMmFhLmJhYXMubmludGVuZG8uY29tIiwic3ViIjoiMDEyMzQ1Njc4OWFiY2RlZiIsImF1ZCI6ImVkOWUyZjA1ZDI4NmY3YjgiLCJpYXQiOjE3NjQxMTUyMDAsImV4cCI6NDEwMjQ0NDgwMCwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwidHlwIjoiaWRfdG9rZW4iLCJiczpkaWQiOiI0ZjRhNDE0ZDAxMDIwMzA0IiwibmludGVuZG8iOnsiYWkiOiIwMTAwOTY1MDE3MzM4MDAwIiwiYXAiOiIwMTAwOTY1MDE3MzM4MDAwIiwibmEiOnsiaWQiOiIwMTIzNDU2Nzg5YWJjZGVmIn0sIm5kYyI6IjAiLCJubCI6InB0LUJSIiwicGZjYyI6IkJSIiwibm4iOiJQbGF5ZXIifX0.b3BlbmphbWJvcmVlLWxvY2FsLXNpZ25hdHVyZS0wMDAw";   /* a well-formed JWT (unsigned placeholder): the SDK may decode it */   /* LoadIdTokenCache */
-      u32 n=(u32)sizeof tok-1; if(a && s){ memset(GP(a),0,s); memcpy(GP(a),tok,n<s? n : s); } out32(c,n); return 0; }
+    case 3: { u64 a,s; buf_out(c,0,&a,&s); const char* tok=online_id_token(); u32 n=(u32)strlen(tok);
+      if(a && s){ memset(GP(a),0,s); memcpy(GP(a),tok,n<s? n : s); } out32(c,n); return 0; }
   }
   return stub_ok(o,c); }
 
