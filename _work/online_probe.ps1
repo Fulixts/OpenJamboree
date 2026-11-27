@@ -35,7 +35,7 @@ while (-not $title -and ((Get-Date) - $t0).TotalSeconds -lt 180 -and -not $p.Has
   if (Test-Path $log) { if (Select-String -Path $log -Pattern 'SM_BGM_TITLE' -Quiet) { $title = Get-Date } } }
 if (-not $title) { Write-Output "no title screen after 180 s"; if (-not $p.HasExited) { Stop-Process $p -Force }; exit 1 }
 Write-Output "title at $([int]($title - $t0).TotalSeconds) s"
-$si = 0; $map = $null; $stage = 0; $last = 0; $done = $false
+$si = 0; $map = $null; $stage = 0; $last = 0; $done = $false; $phase = 0; $mapA = -100
 Add-Type -AssemblyName System.Drawing
 function Take-Shot($h, $tag) {
   $cap = Join-Path $dir "captures"; $before = @(Get-ChildItem "$cap\F8_*.png" -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -60,7 +60,9 @@ while (((Get-Date) - $title).TotalSeconds -lt $After -and -not $p.HasExited) {
   # COM card pink -> Right; "Todo o mundo" card blue -> A; "Nao conectar" pink -> Left; "Conectar" pink -> A, done;
   # anything else (map, notices) -> A
   if (-not $done -and (Seen "internet request accepted")) { $done = $true; Write-Output "the game asked for the internet at $([int]$el) s" }
-  if ($done -or $el - $last -lt 2.5) { continue }
+  # after Conectar: one shot every 15 s, no keys, to see where the game stops
+  if ($done) { if ($el - $last -ge 15) { $last = $el; $f = Take-Shot $h ("online_after_" + [int]$el); if ($f) { Write-Output "shot $f" } }; continue }
+  if ($el - $last -lt 2.5) { continue }
   $last = $el; $shot = Take-Shot $h ("online_" + $si); $si++
   if (-not $shot) { continue }
   $bmp = [System.Drawing.Bitmap]::FromFile($shot)
@@ -71,7 +73,15 @@ while (((Get-Date) - $title).TotalSeconds -lt $After -and -not $p.HasExited) {
   $com = (Pink (Px 480 380)) -and (Pink (Px 920 620)); $world = (Blue (Px 1040 380)) -and (Blue (Px 1200 560))
   $nocon = (Pink (Px 1100 640)) -and (Pink (Px 1080 680)); $con = (Pink (Px 620 640)) -and (Pink (Px 700 680))
   $bmp.Dispose()
-  $flip = -not $flip; $act = if ($world) { "58" } elseif ($com) { if ($flip) { "27@600" } else { "44@600" } } elseif ($nocon) { "25" } elseif ($con) { "58" } else { "58" }
+  # phases: 0 = map (A once, then wait up to 10 s for the opponents screen), 1 = opponents screen seen ("Todo o mundo"
+  # chosen with A moves on), 2 = online notices and guidelines. an unknown screen gets A only in phase 2, so a late
+  # A never picks COM and starts an offline party
+  if ($world -or $com) { if ($phase -lt 1) { $phase = 1 } }
+  $flip = -not $flip
+  $act = if ($world) { "58" } elseif ($com) { if ($flip) { "27@600" } else { "44@600" } } elseif ($nocon) { "25" } elseif ($con) { "58" }
+         elseif ($phase -eq 2) { "58" } elseif ($phase -eq 0 -and ($el - $mapA) -ge 10) { $mapA = $el; "58" } else { "" }
+  if ($world) { $phase = 2 }
+  if (-not $act) { Write-Output ("screen {0,-13} -> wait  ({1:N0} s)" -f "other", $el); continue }
   $what = if ($world) { "world" } elseif ($com) { "COM" } elseif ($nocon) { "nao-conectar" } elseif ($con) { "conectar" } else { "other" }
   Write-Output ("screen {0,-13} -> {1}  ({2:N0} s)" -f $what, $act, $el)
   Start-Sleep -Milliseconds 1000   # an F8 capture stalls a few frames: a key pressed and released inside it is never seen

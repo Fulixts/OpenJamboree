@@ -30,6 +30,7 @@ typedef int SOCKET;
 #include "mbedtls/error.h"
 #include "mbedtls/net_sockets.h"
 #include "psa/crypto.h"
+#include "mbedtls/debug.h"
 #define NGHTTP2_STATICLIB
 #include "nghttp2/nghttp2.h"
 
@@ -42,6 +43,8 @@ static mbedtls_entropy_context g_ent; static mbedtls_ctr_drbg_context g_drbg;
 static mbedtls_x509_crt g_crt; static mbedtls_pk_context g_key; static mbedtls_ssl_config g_conf;
 static const char* g_alpn[]={"h2",NULL};
 static int g_tls_ok;
+/* online_tls_debug=1..4: Mbed TLS's own trace of each handshake in the log (alerts, chosen cipher, certificate checks) */
+static void tls_dbg(void* u, int lv, const char* f, int line, const char* m){ (void)u; (void)f; (void)line; LOG("tls[%d]: %s",lv,m); }
 
 static int tls_init(void){
   char d[1100], c[1200], k[1200]; snprintf(d,sizeof d,"%s%s_online",g_exedir,g_exename);
@@ -54,11 +57,12 @@ static int tls_init(void){
   if(!r) r=mbedtls_ssl_config_defaults(&g_conf,MBEDTLS_SSL_IS_SERVER,MBEDTLS_SSL_TRANSPORT_STREAM,MBEDTLS_SSL_PRESET_DEFAULT);
   if(!r){ mbedtls_ssl_conf_rng(&g_conf,mbedtls_ctr_drbg_random,&g_drbg); r=mbedtls_ssl_conf_own_cert(&g_conf,&g_crt,&g_key); }
   if(!r) r=mbedtls_ssl_conf_alpn_protocols(&g_conf,g_alpn);
+  { int dl=atoi(ini_value("online_tls_debug","0")); if(dl>0){ mbedtls_debug_set_threshold(dl); mbedtls_ssl_conf_dbg(&g_conf,tls_dbg,NULL); } }
   if(r){ char e[160]; mbedtls_strerror(r,e,sizeof e); LOG("online: server TLS setup failed (%s): %s\n",c,e); return 0; }
   return 1; }
 
 /* ============================================================ one connection */
-typedef struct Stream { int32_t id; char path[160]; u8* body; size_t n, cap; struct Stream* next; } Stream;
+typedef struct Stream { int32_t id; char path[160]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status; struct Stream* next; } Stream;
 typedef struct { SOCKET s; mbedtls_ssl_context ssl; nghttp2_session* h2; Stream* st; } Conn;
 
 static int bio_send(void* ctx, const unsigned char* b, size_t n){ int r=send(*(SOCKET*)ctx,(const char*)b,(int)n,0); return r<0? MBEDTLS_ERR_NET_SEND_FAILED : r; }
@@ -69,16 +73,39 @@ static Stream* stream_get(Conn* c, int32_t id, int make){
   if(!make) return NULL;
   Stream* s=calloc(1,sizeof *s); s->id=id; s->next=c->st; c->st=s; return s; }
 static void stream_drop(Conn* c, int32_t id){
-  for(Stream** p=&c->st;*p;p=&(*p)->next) if((*p)->id==id){ Stream* s=*p; *p=s->next; free(s->body); free(s); return; } }
+  for(Stream** p=&c->st;*p;p=&(*p)->next) if((*p)->id==id){ Stream* s=*p; *p=s->next; free(s->body); free(s->resp); free(s); return; } }
 
 #define NV(n,v) { (uint8_t*)(n), (uint8_t*)(v), sizeof(n)-1, strlen(v), NGHTTP2_NV_FLAG_NONE }
 
-/* a complete request: log it and answer (UNIMPLEMENTED for now, as a trailers-only response) */
+/* response body: the gRPC message (5-byte prefix + protobuf), then the trailers with grpc-status */
+static nghttp2_ssize resp_read(nghttp2_session* h, int32_t id, uint8_t* buf, size_t len, uint32_t* fl, nghttp2_data_source* src, void* u){ (void)u;
+  Stream* s=src->ptr; size_t k=s->rn-s->ro; if(k>len) k=len; memcpy(buf,s->resp+s->ro,k); s->ro+=k;
+  if(s->ro>=s->rn){ *fl|=NGHTTP2_DATA_FLAG_EOF|NGHTTP2_DATA_FLAG_NO_END_STREAM;
+    char st[12]; snprintf(st,sizeof st,"%d",s->status);
+    nghttp2_nv t[]={ { (uint8_t*)"grpc-status",(uint8_t*)st,11,strlen(st),NGHTTP2_NV_FLAG_NONE } };
+    nghttp2_submit_trailer(h,id,t,1); }
+  return (nghttp2_ssize)k; }
+
+/* a complete request: answer it from npln.c, or UNIMPLEMENTED (logged) for methods not written yet */
+extern int npln_call(const char* path, const u8* req, size_t n, int* status, u8** out, size_t* outn);
 static void grpc_call(Conn* c, Stream* s){
-  char hex[3*48+1]={0}; size_t show= s->n>48? 48 : s->n; for(size_t i=0;i<show;i++) sprintf(hex+i*3,"%02x ",s->body[i]);
-  LOG("online: grpc %s (%u bytes) %s\n",s->path,(unsigned)s->n,hex);
-  nghttp2_nv h[]={ NV(":status","200"), NV("content-type","application/grpc"), NV("grpc-status","12"), NV("grpc-message","not implemented by the OpenJamboree host yet") };
-  nghttp2_submit_response(c->h2,s->id,h,sizeof h/sizeof h[0],NULL); }
+  const u8* msg= s->n>=5? s->body+5 : (const u8*)""; size_t mn= s->n>=5? s->n-5 : 0;
+  int st=0; u8* out=NULL; size_t on=0;
+  if(npln_call(s->path,msg,mn,&st,&out,&on)<0){
+    char hex[3*48+1]={0}; size_t show= mn>48? 48 : mn; for(size_t i=0;i<show;i++) sprintf(hex+i*3,"%02x ",msg[i]);
+    LOG("online: grpc %s (%u bytes) not implemented: %s\n",s->path,(unsigned)mn,hex);
+    nghttp2_nv h[]={ NV(":status","200"), NV("content-type","application/grpc"), NV("grpc-status","12"), NV("grpc-message","not implemented by the OpenJamboree host yet") };
+    nghttp2_submit_response2(c->h2,s->id,h,sizeof h/sizeof h[0],NULL); return; }
+  LOG("online: grpc %s -> %u bytes, status %d\n",s->path,(unsigned)on,st);
+  if(st){ /* errors go out trailers-only: no message, grpc-status in the one HEADERS frame */
+    char sts[12]; snprintf(sts,sizeof sts,"%d",st); free(out);
+    nghttp2_nv eh[]={ NV(":status","200"), NV("content-type","application/grpc"), { (uint8_t*)"grpc-status",(uint8_t*)sts,11,strlen(sts),NGHTTP2_NV_FLAG_NONE } };
+    nghttp2_submit_response2(c->h2,s->id,eh,3,NULL); return; }
+  s->status=st; s->rn=5+on; s->ro=0; s->resp=malloc(s->rn);
+  s->resp[0]=0; s->resp[1]=(u8)(on>>24); s->resp[2]=(u8)(on>>16); s->resp[3]=(u8)(on>>8); s->resp[4]=(u8)on; if(on) memcpy(s->resp+5,out,on); free(out);
+  nghttp2_nv h[]={ NV(":status","200"), NV("content-type","application/grpc") };
+  nghttp2_data_provider2 dp; dp.source.ptr=s; dp.read_callback=resp_read;
+  nghttp2_submit_response2(c->h2,s->id,h,2,&dp); }
 
 static int on_begin_headers(nghttp2_session* h, const nghttp2_frame* f, void* u){ (void)h;
   if(f->hd.type==NGHTTP2_HEADERS && f->headers.cat==NGHTTP2_HCAT_REQUEST) stream_get((Conn*)u,f->hd.stream_id,1); return 0; }
@@ -147,6 +174,29 @@ static void listen_thread(void* arg){ (void)arg;
     setsockopt(s,IPPROTO_TCP,TCP_NODELAY,(const char*)&one,sizeof one);
     Conn* c=calloc(1,sizeof *c); c->s=s; plat_thread(conn_thread,c,1<<20); } }
 
+/* ============================================================ Pia's NAT check
+   (nn::pia NatPropertyDetecter, the nncs1/nncs2 servers, resolved to the host): 16-byte requests whose first
+   big-endian word is the kind, 101 and 102 to nncs1, 103 to nncs2, on UDP 10025 and 10125. the answer is the kind,
+   then the port and address the request came from as the host sees them; 102 is answered from the other port.
+   after OpenSmash's nex_datagram (runtime/net_nex_core.c, GPL-3.0-or-later, commit 657a4d06) */
+static void nat_thread(void* arg){ (void)arg;
+  static const u16 ports[2]={10025,10125}; SOCKET s[2];
+  for(int i=0;i<2;i++){ s[i]=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP); struct sockaddr_in a={0}; a.sin_family=AF_INET; a.sin_port=htons(ports[i]); a.sin_addr.s_addr=INADDR_ANY;
+    if(bind(s[i],(struct sockaddr*)&a,sizeof a)){ LOG("online: NAT check port %u is busy\n",ports[i]); return; } }
+  LOG("online: NAT check on UDP %u and %u\n",ports[0],ports[1]);
+  for(;;){
+    fd_set rs; FD_ZERO(&rs); FD_SET(s[0],&rs); FD_SET(s[1],&rs); SOCKET mx= s[0]>s[1]? s[0] : s[1];
+    if(select((int)mx+1,&rs,NULL,NULL,NULL)<=0) continue;
+    for(int i=0;i<2;i++){ if(!FD_ISSET(s[i],&rs)) continue;
+      u8 b[64]; struct sockaddr_in f; socklen_t fl=sizeof f; int n=recvfrom(s[i],(char*)b,sizeof b,0,(struct sockaddr*)&f,&fl);
+      if(n<16) continue;
+      u32 kind=(u32)b[0]<<24|(u32)b[1]<<16|(u32)b[2]<<8|b[3]; if(kind<101 || kind>103) continue;
+      u16 port=ntohs(f.sin_port); u32 ip=ntohl(f.sin_addr.s_addr);
+      u8 r[16]={b[0],b[1],b[2],b[3],0,0,(u8)(port>>8),(u8)port,(u8)(ip>>24),(u8)(ip>>16),(u8)(ip>>8),(u8)ip,0,0,0,0};
+      SOCKET from= kind==102? s[i^1] : s[i];
+      sendto(from,(const char*)r,16,0,(struct sockaddr*)&f,fl);
+      static int said; if(said<12){ said++; LOG("online: NAT check %u from %s:%u\n",kind,inet_ntoa(f.sin_addr),port); } } } }
+
 /* started once, by the first online call, on the PC that hosts (online_host empty or one of its own addresses) */
 void online_server_start(void){
   static int started; if(started) return; started=1;
@@ -157,4 +207,5 @@ void online_server_start(void){
 #endif
   if(!tls_init()) return;
   g_tls_ok=1;
-  plat_thread(listen_thread,NULL,1<<20); }
+  plat_thread(listen_thread,NULL,1<<20);
+  plat_thread(nat_thread,NULL,1<<20); }

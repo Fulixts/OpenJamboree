@@ -298,7 +298,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     # tools/build_net_libs.py into runtime/{mbedtls,nghttp2}/<os>/; without them the runtime builds without hosting
     netlibs = [os.path.join(RT, 'mbedtls', 'win' if target_win else 'lin', 'libmbedtls.a'), os.path.join(RT, 'nghttp2', 'win' if target_win else 'lin', 'libnghttp2.a')]
     online = gl and all(os.path.isfile(x) for x in netlibs)
-    srcs += [os.path.join(RT, 'online.c' if online else 'online_stub.c')]
+    srcs += [os.path.join(RT, 'online.c'), os.path.join(RT, 'npln.c')] if online else [os.path.join(RT, 'online_stub.c')]
     if menu: srcs += [os.path.join(RT, 'menu.cpp')] + [os.path.join(RT, 'imgui', f) for f in
                       ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_opengl3.cpp')]
     # NVDEC/VIC video: link OpenH264 (BSD) statically if we have it for this target

@@ -479,7 +479,7 @@ static u32 lx_errno(int e, int connecting){
 }
 
 static void bsd_ret(IpcCtx* c, int ret, u32 err){ out32(c,(u32)ret); out32(c,err); }
-static void bsd_fail(IpcCtx* c, int connecting){ bsd_ret(c,-1,lx_errno(SOCK_ERR,connecting)); }
+static void bsd_fail(IpcCtx* c, int connecting){ int e=SOCK_ERR; u32 lx=lx_errno(e,connecting); if(lx==22){ static int said; if(said<20){ said++; LOG("lan: bsd cmd %u host error %d -> EINVAL\n",c->cmd,e); } } bsd_ret(c,-1,lx); }
 
 /* FreeBSD sockaddr_in (u8 len, u8 family) <-> host */
 static int sa_in(u64 a, u64 s, struct sockaddr_in* o){
@@ -519,7 +519,14 @@ static int one_call_nonblock(u32 fd, u32 flags){
   (void)fd; (void)flags;
 #endif
   return 0; }
-static void restore_block(u32 fd, int t){ if(t) sock_nonblock(g_fd[fd].s,0); }
+/* keeps the error of the call it follows: ioctlsocket would reset WSAGetLastError and every failure would read as EINVAL */
+static void restore_block(u32 fd, int t){ if(!t) return;
+#ifdef _WIN32
+  int e=WSAGetLastError(); sock_nonblock(g_fd[fd].s,0); WSASetLastError(e);
+#else
+  int e=errno; sock_nonblock(g_fd[fd].s,0); errno=e;
+#endif
+}
 
 /* poll over select (Winsock's WSAPoll uses other bit values) */
 static int do_poll(u8* pf, int n, int timeout_ms){
@@ -702,7 +709,27 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       g_fd[f].s=r; g_fd[f].w=w; g_fd[f].type=3; g_fd[f].nonblock=(fl&0x800)!=0 || (fl&4)!=0; g_fd[f].bound=1; pm_unlock(&g_fdlk);
       if(init) send(w,(const char*)&init,8,0);
       LOG("lan: eventfd %d\n",f); bsd_ret(c,f,0); return 0; }
-    case 7: case 29: case 30: bsd_ret(c,-1,95); return 0;
+    case 29: case 30: {
+      /* RecvMMsg / SendMMsg (gRPC sends and reads through these). the out buffer is a serialized mmsghdr (Ryujinx
+         BsdMMsgHdr): u8 header, then per message {u32 namelen, name, u32 iovcnt, {u64 len, data}[iovcnt],
+         u32 ctrllen, ctrl, u32 flags, u32 msg_len}. data is sent/received in place and msg_len filled in */
+      if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
+      u32 vlen=in32(c,4), fl=in32(c,8); buf_out(c,0,&a,&s); u8* b=GP(a); u64 o=1, end=s; int done_msgs=0;
+      for(u32 m=0;m<vlen && m<16;m++){
+        u32 nl,ic,cl; if(o+4>end) break; memcpy(&nl,b+o,4); o+=4+nl; if(o+4>end) break; memcpy(&ic,b+o,4); o+=4;
+        u64 iv_off[16], iv_len[16]; u32 ni=0;
+        for(u32 k=0;k<ic && o+8<=end;k++){ u64 l; memcpy(&l,b+o,8); o+=8; if(ni<16){ iv_off[ni]=o; iv_len[ni]=l; ni++; } o+=l; }
+        if(o+4>end) break; memcpy(&cl,b+o,4); o+=4+cl; u64 lenpos=o+4; o+=8; if(o>end) break;
+        int t=one_call_nonblock(fd,fl); i64 total=0; int err=0;
+        for(u32 k=0;k<ni;k++){
+          int r= c->cmd==30? send(g_fd[fd].s,(const char*)b+iv_off[k],(int)iv_len[k],host_flags(fl)) : recv(g_fd[fd].s,(char*)b+iv_off[k],(int)iv_len[k],host_flags(fl));
+          if(r<0){ if(!total) err=1; break; } total+=r; if((u64)r<iv_len[k]) break; if(c->cmd==29 && r==0) break; }
+        restore_block(fd,t);
+        if(err){ if(!done_msgs){ bsd_fail(c,0); return 0; } break; }
+        u32 ml=(u32)total; memcpy(b+lenpos,&ml,4); done_msgs++;
+        if(c->cmd==29 && total==0) break; }
+      bsd_ret(c,done_msgs,0); return 0; }
+    case 7: bsd_ret(c,-1,95); return 0;
   }
   { static int said; if(said<20){ said++; LOG("lan: bsd cmd %u not handled\n",c->cmd); } }
   bsd_ret(c,-1,95); return 0; }
