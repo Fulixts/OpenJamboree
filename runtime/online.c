@@ -64,7 +64,7 @@ static int tls_init(void){
 /* ============================================================ one connection */
 typedef struct Stream { int32_t id; char path[160], auth[2048]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status;
   void* track; int fin, deferred; struct Stream* next; } Stream;   /* track: a server stream (npln_stream_open) */
-typedef struct { SOCKET s; mbedtls_ssl_context ssl; nghttp2_session* h2; Stream* st; } Conn;
+typedef struct { SOCKET s; mbedtls_ssl_context ssl; nghttp2_session* h2; Stream* st; int nfr; } Conn;
 
 static int bio_send(void* ctx, const unsigned char* b, size_t n){ int r=send(*(SOCKET*)ctx,(const char*)b,(int)n,0); return r<0? MBEDTLS_ERR_NET_SEND_FAILED : r; }
 static int bio_recv(void* ctx, unsigned char* b, size_t n){ int r=recv(*(SOCKET*)ctx,(char*)b,(int)n,0); return r<0? MBEDTLS_ERR_NET_RECV_FAILED : r==0? MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY : r; }
@@ -142,6 +142,12 @@ static int on_data(nghttp2_session* h, uint8_t fl, int32_t id, const uint8_t* d,
   Stream* s=stream_get((Conn*)u,id,0); if(!s) return 0;
   if(s->n+n>s->cap){ s->cap=(s->n+n)*2+256; s->body=realloc(s->body,s->cap); } memcpy(s->body+s->n,d,n); s->n+=n; return 0; }
 static int on_frame(nghttp2_session* h, const nghttp2_frame* f, void* u){ (void)h;
+  /* SWR_ONLINE_FRAMES=1: every HTTP/2 frame the game sends (the first 16 of each connection) */
+  { static int on=-1; if(on<0) on=getenv("SWR_ONLINE_FRAMES")!=NULL; Conn* c=u;
+    if(on && c->nfr<16){ c->nfr++;
+      if(f->hd.type==NGHTTP2_GOAWAY) LOG("online: frame GOAWAY error %u last stream %d\n",f->goaway.error_code,f->goaway.last_stream_id);
+      else if(f->hd.type==NGHTTP2_RST_STREAM) LOG("online: frame RST_STREAM %d error %u\n",f->hd.stream_id,f->rst_stream.error_code);
+      else LOG("online: frame type %u flags %x stream %d length %u\n",f->hd.type,f->hd.flags,f->hd.stream_id,(unsigned)f->hd.length); } }
   if(f->hd.type==NGHTTP2_HEADERS && !(f->hd.flags&NGHTTP2_FLAG_END_STREAM)){
     Stream* s=stream_get((Conn*)u,f->hd.stream_id,0); if(s && strstr(s->path,"gamesync") && !strstr(s->path,"KeepUserSession")) LOG("online: request %s (headers, body follows)\n",s->path);
     if(s && strstr(s->path,"KeepUserSession")) LOG("online: grpc %s opened (bidirectional, not served yet)\n",s->path); }

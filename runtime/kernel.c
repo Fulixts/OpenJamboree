@@ -551,7 +551,15 @@ static const char* gsym(u64 a){
   return o; }
 
 static void guest_backtrace(CPU* c);
-void guest_backtrace_ext(CPU* c){ guest_backtrace(c); }
+/* the frame chain plus a scan of the stack for return addresses (a value in the code range whose previous word is
+   a BL/BLR): code built without frame pointers breaks the chain, the scan still shows who called */
+void guest_backtrace_ext(CPU* c){ guest_backtrace(c);
+  u64 sp=c->x[31]; MemBlock b; mem_query(sp,&b); if(b.state==MS_FREE || b.state==MS_INACCESSIBLE) return;
+  u64 end=b.addr+b.size; if(end>sp+0x4000) end=sp+0x4000; int n=0;
+  for(u64 a=sp&~7ull;a+8<=end && n<40;a+=8){ u64 v=gr64(a);
+    if(v<g_code_lo+4 || v>=g_code_hi || (v&3)) continue;
+    u32 w=gr32(v-4); if((w&0xFC000000u)!=0x94000000u && (w&0xFFFFFC1Fu)!=0xD63F0000u) continue;
+    WARN("   ~ sp+%llx %llx%s\n",(unsigned long long)(a-sp),(unsigned long long)v,gsym(v)); n++; } }
 static void guest_backtrace(CPU* c){
   WARN("  pc=%llx lr=%llx sp=%llx fp=%llx\n",(unsigned long long)c->pc,(unsigned long long)c->x[30],(unsigned long long)c->x[31],(unsigned long long)c->x[29]);
   { /* this also runs from the crash handler: a fault here would kill the report */
@@ -678,6 +686,16 @@ static void hle_fn_trace(CPU* RESTRICT c, u64 entry){
 static u64 g_td_lo, g_td_hi, g_td_clo, g_td_chi; static GuestFn* g_td_orig; static u8* g_td_seen;
 static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
   u64 i=(entry-g_td_lo)/4; u64 lr=c->x[30];
+  /* SWR_POKE_LOGLEVEL=gotaddr,value (hex,dec): on the first traced call, store value in the u32 the GOT entry at
+     gotaddr points to (a game's log level, so its log formatting runs). SWR_TRACE_DYN_STR=1: for calls from
+     [clo,chi), print the string the callee left at x0 (a vsnprintf buffer) and nothing else, with no count limit */
+  { static int poked; if(!poked){ poked=1; const char* p=getenv("SWR_POKE_LOGLEVEL");
+      if(p){ unsigned long long ga=0; int v=0; if(sscanf(p,"%llx,%d",&ga,&v)==2){ u64 t=gr64(ga); if(t>=AS_BASE && t<AS_SIZE){ u32 w=(u32)v; memcpy(GP(t),&w,4); LOG("dyn: log level at %llx set to %d\n",(unsigned long long)t,v); } } } } }
+  { static int str=-1; if(str<0) str=getenv("SWR_TRACE_DYN_STR")!=NULL;
+    if(str && lr>=g_td_clo && lr<g_td_chi){ u64 buf=c->x[0]; g_td_orig[i](c,entry);
+      if(buf>=AS_BASE && buf<AS_SIZE){ char s[400]; int k=0; const u8* p=GP(buf); while(k<399 && p[k]){ s[k]= p[k]>=0x20 && p[k]<0x7f? (char)p[k] : '.'; k++; } s[k]=0;
+        if(k) LOG("[bex] %s\n",s); }
+      return; } }
   static int mx=-1; if(mx<0){ const char* e=getenv("SWR_TRACE_DYN_MAX"); mx= e? atoi(e) : 4; if(mx>250) mx=250; }
   int show= lr>=g_td_clo && lr<g_td_chi && g_td_seen[i]<mx;
   if(show){ g_td_seen[i]++;

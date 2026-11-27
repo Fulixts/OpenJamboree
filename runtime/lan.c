@@ -691,7 +691,7 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       bsd_ret(c,0,0); return 0; }
     case 22: if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
       /* SWR_ONLINE_BT=1: who shuts a connection to the host server down (the game gives up on it) */
-      if(g_fd[fd].online && getenv("SWR_ONLINE_BT")){ static int said; if(said<6){ said++; LOG("lan: socket %u to the server shut down by:\n",fd); extern void ipc_backtrace(IpcCtx*); ipc_backtrace(c); } }
+      if(g_fd[fd].online && getenv("SWR_ONLINE_BT")){ static int said; if(said<80){ said++; LOG("lan: socket %u to the server shut down by:\n",fd); extern void ipc_backtrace(IpcCtx*); ipc_backtrace(c); } }
       shutdown(g_fd[fd].s,(int)in32(c,4)); bsd_ret(c,0,0); return 0;
     case 23: bsd_ret(c,0,0); return 0;
     case 26: {
