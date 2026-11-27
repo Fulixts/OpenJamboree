@@ -31,6 +31,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 #include <net/if.h>
 #include <unistd.h>
 #include <fcntl.h>
