@@ -62,7 +62,7 @@ static int tls_init(void){
   return 1; }
 
 /* ============================================================ one connection */
-typedef struct Stream { int32_t id; char path[160], auth[96]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status;
+typedef struct Stream { int32_t id; char path[160], auth[2048]; u8* body; size_t n, cap; u8* resp; size_t rn, ro; int status;
   void* track; int fin, deferred; struct Stream* next; } Stream;   /* track: a server stream (npln_stream_open) */
 typedef struct { SOCKET s; mbedtls_ssl_context ssl; nghttp2_session* h2; Stream* st; } Conn;
 
@@ -142,6 +142,9 @@ static int on_data(nghttp2_session* h, uint8_t fl, int32_t id, const uint8_t* d,
   Stream* s=stream_get((Conn*)u,id,0); if(!s) return 0;
   if(s->n+n>s->cap){ s->cap=(s->n+n)*2+256; s->body=realloc(s->body,s->cap); } memcpy(s->body+s->n,d,n); s->n+=n; return 0; }
 static int on_frame(nghttp2_session* h, const nghttp2_frame* f, void* u){ (void)h;
+  if(f->hd.type==NGHTTP2_HEADERS && !(f->hd.flags&NGHTTP2_FLAG_END_STREAM)){
+    Stream* s=stream_get((Conn*)u,f->hd.stream_id,0); if(s && strstr(s->path,"gamesync") && !strstr(s->path,"KeepUserSession")) LOG("online: request %s (headers, body follows)\n",s->path);
+    if(s && strstr(s->path,"KeepUserSession")) LOG("online: grpc %s opened (bidirectional, not served yet)\n",s->path); }
   if((f->hd.type==NGHTTP2_HEADERS || f->hd.type==NGHTTP2_DATA) && (f->hd.flags&NGHTTP2_FLAG_END_STREAM)){
     Stream* s=stream_get((Conn*)u,f->hd.stream_id,0); if(s) grpc_call((Conn*)u,s); }
   return 0; }
@@ -170,7 +173,7 @@ static void conn_thread(void* arg){
   nghttp2_settings_entry se[]={{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,100}};
   nghttp2_submit_settings(c->h2,NGHTTP2_FLAG_NONE,se,1);
   if(flush_h2(c)) goto done;
-  u8 buf[16384];
+  u8 buf[16384]; const char* why="?"; long long rx=0; int first=1;
   for(;;){
     /* wake every 200 ms while a server stream is open, to send its news */
     int streams=0; for(Stream* s=c->st;s;s=s->next) if(s->track) streams=1;
@@ -184,12 +187,15 @@ static void conn_thread(void* arg){
 #ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
     if(n==MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;
 #endif
-    if(n<=0) break;
-    if(nghttp2_session_mem_recv2(c->h2,buf,(size_t)n)<0) break;
-    if(flush_h2(c)) break;
-    if(!nghttp2_session_want_read(c->h2) && !nghttp2_session_want_write(c->h2)) break; }
+    if(n<=0){ why= n==0 || n==MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY? "peer closed" : "read error"; break; }
+    if(first){ first=0; char hx[3*24+1]={0}; for(int i=0;i<n && i<24;i++) sprintf(hx+i*3,"%02x ",buf[i]);
+      if(memcmp(buf,"PRI * HTTP/2.0",14)) LOG("online: %s first bytes are not HTTP/2: %s\n",who,hx); }
+    rx+=n;
+    { nghttp2_ssize k=nghttp2_session_mem_recv2(c->h2,buf,(size_t)n); if(k<0){ why=nghttp2_strerror((int)k); break; } }
+    if(flush_h2(c)){ why="write error"; break; }
+    if(!nghttp2_session_want_read(c->h2) && !nghttp2_session_want_write(c->h2)){ why="session over (GOAWAY)"; break; } }
 done:
-  LOG("online: %s disconnected\n",who);
+  LOG("online: %s disconnected (%s, %lld bytes in)\n",who,why,rx);
   nghttp2_session_del(c->h2);
   while(c->st) stream_drop(c,c->st->id);
 out:

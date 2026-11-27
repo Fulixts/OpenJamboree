@@ -63,8 +63,24 @@ static void user_msg(PB* out, const char* tenant, u64 id){
   pb_str(out,1,name); pb_str(out,2,acct); pb_seconds(out,3,(i64)now-86400); pb_seconds(out,4,(i64)now);
   pb_int(out,5,id & 0x7FFFFFFFFFFFull); }
 
+static void b64u(const u8* d, size_t n, char* o){
+  static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"; size_t k=0;
+  for(size_t i=0;i<n;i+=3){ u32 v=(u32)d[i]<<16 | (i+1<n? (u32)d[i+1]<<8 : 0) | (i+2<n? d[i+2] : 0);
+    o[k++]=t[v>>18&63]; o[k++]=t[v>>12&63]; if(i+1<n) o[k++]=t[v>>6&63]; if(i+2<n) o[k++]=t[v&63]; }
+  o[k]=0; }
+/* NPLN access tokens are ES256 JWTs whose payload names the user (sub) and tenant (npln.tid); the game's SDK reads
+   them to know which user it is, so ours have that shape too (with a placeholder signature: only our server checks
+   them, and it only reads sub back) */
+static void npln_jwt(char* o, size_t cap, u64 id, const char* kind){
+  char js[600], body[900]; long long now=(long long)time(NULL);
+  snprintf(js,sizeof js,"{\"exp\":%lld,\"iat\":%lld,\"iss\":\"default iss\",\"sub\":\"%016llx\",\"jti\":\"ojam-%s-%016llx\","
+    "\"npln\":{\"aid\":\"%016llx\",\"app_id\":\"0100965017338000\",\"authorization\":{\"allow\":[],\"deny\":[],\"nso_restricted\":false},"
+    "\"ext_id\":\"%016llx\",\"ext_id_type\":\"nsa\",\"tid\":\"t-adf89f68-lp1\"}}",
+    now+28800,now,(unsigned long long)id,kind,(unsigned long long)id,(unsigned long long)id,(unsigned long long)id);
+  b64u((const u8*)js,strlen(js),body);
+  snprintf(o,cap,"eyJhbGciOiJFUzI1NiIsImprdSI6Imp3a1NldHMvbnBsbiBBY2Nlc3NUb2tlbiIsImtpZCI6Im9qYW0ifQ.%s.b2phbS1zaWduYXR1cmU",body); }
 static void token_msg(PB* out, const char* user, u64 id){
-  char a[64], r[64]; snprintf(a,sizeof a,"ojam-access-%016llx",(unsigned long long)id); snprintf(r,sizeof r,"ojam-refresh-%016llx",(unsigned long long)id);
+  char a[1200], r[1200]; npln_jwt(a,sizeof a,id,"access"); npln_jwt(r,sizeof r,id,"refresh");
   pb_str(out,1,user); pb_str(out,2,a); pb_str(out,3,r); pb_seconds(out,4,28800); }
 
 static u64 user_from_name(const char* s){ const char* u=strstr(s,"/users/"); return u? strtoull(u+7,NULL,16) : 1; }
@@ -119,14 +135,21 @@ static int ugcstore(const char* m, const u8* q, size_t n, PB* out){
     return 0; }
   return -1; }
 
-/* who is calling: the access token of the call's "authorization: Bearer ojam-access-<id>" header (one per thread,
+/* who is calling: the access token of the call's "authorization: Bearer <jwt>" header (one per thread,
    online.c sets it before each call). requests name their own user "tenants/current/users/current" */
 #ifdef _MSC_VER
 static __declspec(thread) u64 t_caller;
 #else
 static __thread u64 t_caller;
 #endif
-void npln_set_caller(const char* a){ const char* k= a? strstr(a,"ojam-access-") : NULL; t_caller= k? strtoull(k+12,NULL,16) : 0; }
+/* the user id: "sub" in the access token's payload (base64url between the two dots) */
+static int b64v(char c){ return c>='A'&&c<='Z'? c-'A' : c>='a'&&c<='z'? c-'a'+26 : c>='0'&&c<='9'? c-'0'+52 : c=='-'||c=='+'? 62 : c=='_'||c=='/'? 63 : -1; }
+void npln_set_caller(const char* a){
+  t_caller=0; if(!a) return;
+  const char* p=strchr(a,'.'); if(!p) return; p++; const char* e=strchr(p,'.'); if(!e) return;
+  char js[1000]; size_t k=0; u32 acc=0; int bits=0;
+  for(const char* q=p;q<e && k<sizeof js-1;q++){ int v=b64v(*q); if(v<0) break; acc=acc<<6|(u32)v; bits+=6; if(bits>=8){ bits-=8; js[k++]=(char)(acc>>bits); } }
+  js[k]=0; const char* sb=strstr(js,"\"sub\":\""); if(sb) t_caller=strtoull(sb+7,NULL,16); }
 static void real_user(char* u, size_t cap){
   if(t_caller && (!*u || strstr(u,"/users/current"))) snprintf(u,cap,"tenants/t-adf89f68-lp1/users/%016llx",(unsigned long long)t_caller); }
 
@@ -191,11 +214,6 @@ static void mm_tick(void){
     LOG("online: matchmaking put %d player(s) in room %s (%d/%d)\n",users,s->name,s->nu,mm_size()); } }
 
 /* a JWT-shaped matchmaking id token (unsigned placeholder signature): the SDK may decode it */
-static void b64u(const u8* d, size_t n, char* o){
-  static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"; size_t k=0;
-  for(size_t i=0;i<n;i+=3){ u32 v=(u32)d[i]<<16 | (i+1<n? (u32)d[i+1]<<8 : 0) | (i+2<n? d[i+2] : 0);
-    o[k++]=t[v>>18&63]; o[k++]=t[v>>12&63]; if(i+1<n) o[k++]=t[v>>6&63]; if(i+2<n) o[k++]=t[v&63]; }
-  o[k]=0; }
 static void mm_token(char* o, size_t cap, const Session* s, const char* us, const char* user){
   char js[700], body[1000]; i64 now=(i64)time(NULL);
   snprintf(js,sizeof js,"{\"iss\":\"https://t-adf89f68-lp1.lp1.t.npln.srv.nintendo.net\",\"sub\":\"%s\",\"aud\":\"%s\",\"iat\":%lld,\"exp\":%lld,"
@@ -210,6 +228,7 @@ static void user_session_msg(PB* u, const Session* s, int i){ char nm[140]; user
 static void session_msg(PB* out, const Session* s){
   pb_str(out,1,s->name); pb_int(out,2,(u64)mm_size()); pb_int(out,3,(u64)s->nu); pb_int(out,4,s->nu<mm_size());
   pb_int(out,7,2);                                                          /* ACTIVE */
+  pb_str(out,8,ini_value("online_gamesync_host","g2122d301.lp1.p.srv.nintendo.net")); pb_int(out,9,443);
   pb_seconds(out,10,s->born);
   if(s->propn) pb_bytes(out,11,s->props,s->propn);
   for(int i=0;i<s->nu;i++){ PB u={0}; user_session_msg(&u,s,i); pb_msg(out,12,&u); } }
@@ -236,8 +255,13 @@ static int ticket_new(int kind, const u8* q, size_t n, PB* out){
     const u8* gs; size_t gn; const u8* pr; size_t pn;
     if(!kind && pb_get(tk,tn,6,&gs,&gn,NULL) && pb_get(gs,gn,11,&pr,&pn,NULL)){ t->props=malloc(pn+1); memcpy(t->props,pr,pn); t->propn=pn; }
     size_t o=0; const u8* d; size_t dn;
-    while(t->nu<MM_USERS && pb_next(tk,tn,kind? 4 : 3,&o,&d,&dn)){ t->defs[t->nu]=malloc(dn+1); memcpy(t->defs[t->nu],d,dn); t->defn[t->nu]=dn;
-      pb_getstr(d,dn,1,t->user[t->nu],sizeof t->user[0]); real_user(t->user[t->nu],sizeof t->user[0]); t->nu++; } }
+    while(t->nu<MM_USERS && pb_next(tk,tn,kind? 4 : 3,&o,&d,&dn)){
+      pb_getstr(d,dn,1,t->user[t->nu],sizeof t->user[0]); real_user(t->user[t->nu],sizeof t->user[0]);
+      /* the stored definition names the real user instead of users/current (field 1 comes first) */
+      PB nd={0}; pb_str(&nd,1,t->user[t->nu]); size_t skip=0; const u8* f1; size_t f1n;
+      if(dn && d[0]==0x0a && pb_get(d,dn,1,&f1,&f1n,NULL)) skip=(size_t)(f1+f1n-d);
+      pb_need(&nd,dn-skip); memcpy(nd.p+nd.n,d+skip,dn-skip); nd.n+=dn-skip;
+      t->defs[t->nu]=nd.p; t->defn[t->nu]=nd.n; t->nu++; } }
   { static int said; if(said<4){ said++; char hx[3*400+1]={0}; size_t sh= n>400? 400 : n; for(size_t i=0;i<sh;i++) sprintf(hx+i*3,"%02x ",q[i]);
       LOG("online: %s ticket request (%u bytes): %s\n",kind? "matchmaking" : "room",(unsigned)n,hx); } }
   t->state=1; t->born=(i64)time(NULL);
@@ -283,6 +307,14 @@ int npln_stream_poll(void* h, u8** out, size_t* outn, int* fin){
   pm_unlock(&g_mmlk); return r; }
 void npln_stream_close(void* h){ free(h); }
 
+/* ============================================================ nn.npln.gamesync.v1.Gamesync
+   Pia's mesh runs through it after matchmaking: a document store shared by the players of one game session */
+static int gamesync(const char* m, const u8* q, size_t n, PB* out){
+  if(!strcmp(m,"IssueToken") || !strcmp(m,"RefreshToken")){ char us[160]; pb_getstr(q,n,1,us,sizeof us);
+    PB t={0}; pb_str(&t,1,us); char a[200]; snprintf(a,sizeof a,"ojam-gs-%s",us); pb_str(&t,2,a); pb_str(&t,3,a); pb_seconds(&t,4,28800);
+    pb_msg(out,1,&t); LOG("online: gamesync token for %s\n",us); return 0; }
+  return -1; }
+
 /* ============================================================ dispatch */
 int npln_call(const char* path, const u8* req, size_t n, int* status, u8** out, size_t* outn){
   /* "/nn.npln.<svc>.v1.<Service>/<Method>" */
@@ -292,5 +324,6 @@ int npln_call(const char* path, const u8* req, size_t n, int* status, u8** out, 
   else if(strstr(path,".ugcstore.v1.Ugcstore/")) r=ugcstore(m,req,n,&b);
   else if(strstr(path,".matchmaking.v1.GameSessionService/")) r=gamesession(m,req,n,&b);
   else if(strstr(path,".matchmaking.v1.Matchmaker/")) r=matchmaker(m,req,n,&b);
+  else if(strstr(path,".gamesync.v1.Gamesync/")) r=gamesync(m,req,n,&b);
   if(r<0){ free(b.p); return -1; }
   *status=r; *out=b.p; *outn=b.n; return 0; }

@@ -550,6 +550,8 @@ static const char* gsym(u64 a){
   snprintf(o,200," <%.150s+%llx>",(const char*)GP(g_gstr[g_gsyms[best].mod]+g_gsyms[best].name_off),(unsigned long long)(a-g_gsyms[best].addr));
   return o; }
 
+static void guest_backtrace(CPU* c);
+void guest_backtrace_ext(CPU* c){ guest_backtrace(c); }
 static void guest_backtrace(CPU* c){
   WARN("  pc=%llx lr=%llx sp=%llx fp=%llx\n",(unsigned long long)c->pc,(unsigned long long)c->x[30],(unsigned long long)c->x[31],(unsigned long long)c->x[29]);
   { /* this also runs from the crash handler: a fault here would kill the report */
@@ -676,7 +678,8 @@ static void hle_fn_trace(CPU* RESTRICT c, u64 entry){
 static u64 g_td_lo, g_td_hi, g_td_clo, g_td_chi; static GuestFn* g_td_orig; static u8* g_td_seen;
 static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
   u64 i=(entry-g_td_lo)/4; u64 lr=c->x[30];
-  int show= lr>=g_td_clo && lr<g_td_chi && g_td_seen[i]<4;
+  static int mx=-1; if(mx<0){ const char* e=getenv("SWR_TRACE_DYN_MAX"); mx= e? atoi(e) : 4; if(mx>250) mx=250; }
+  int show= lr>=g_td_clo && lr<g_td_chi && g_td_seen[i]<mx;
   if(show){ g_td_seen[i]++;
     LOG("dyn: %llx from %llx (%llx, %llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2],(unsigned long long)c->x[3]); }
   /* SWR_DUMP_GRPC=1: the call is grpc_call_start_batch(call, ops, nops, tag): print the initial metadata of the
@@ -697,7 +700,12 @@ static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
           int o=0; for(u64 q=0;q<len && o<190;q++){ u8 ch=p[q]; if(ch>=0x20 && ch<0x7F) kv[h][o++]=(char)ch; else o+=snprintf(kv[h]+o,8,"\\x%02x",ch); } kv[h][o]=0; }
         LOG("grpc:   [%llu] '%s' = '%s'\n",(unsigned long long)m,kv[0],kv[1]); } } }
   g_td_orig[i](c,entry);
-  if(show) LOG("dyn: %llx returned %llx\n",(unsigned long long)entry,(unsigned long long)c->x[0]); }
+  if(show) LOG("dyn: %llx returned %llx\n",(unsigned long long)entry,(unsigned long long)c->x[0]);
+  /* SWR_TRACE_DYN_CHANGES=1: past the first calls, still log a target's return whenever it differs from its last
+     one (for functions polled every frame, such as a result getter) */
+  else if(lr>=g_td_clo && lr<g_td_chi){ static int ch=-1; if(ch<0) ch=getenv("SWR_TRACE_DYN_CHANGES")!=NULL;
+    static u64* last; if(ch && !last) last=calloc((size_t)((g_td_hi-g_td_lo)/4),8);
+    if(ch && last && last[i]!=c->x[0]+1){ last[i]=c->x[0]+1; LOG("dyn: %llx from %llx now returns %llx\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0]); } } }
 
 static int heap_fn_wanted(const char* nm){
   if(strncmp(nm,"_ZN4sead7ExpHeap",16) && strncmp(nm,"_ZNK4sead7ExpHeap",17)) return 0;

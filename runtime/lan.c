@@ -454,7 +454,7 @@ void lan_status(char* out, int n){
 
 /* ============================================================ bsd:u (docs/LAN_SPEC.md 3) */
 #define NFD 64
-static struct { SOCKET s, w; int type, nonblock, bound; } g_fd[NFD];   /* type 3 = eventfd: s reads, w writes (a connected UDP pair) */
+static struct { SOCKET s, w; int type, nonblock, bound, online; } g_fd[NFD];   /* type 3 = eventfd: s reads, w writes (a connected UDP pair) */
 static PMutex g_fdlk; static int g_fdinit;
 
 static void fd_init(void){ if(!g_fdinit){ pm_init(&g_fdlk); for(int i=0;i<NFD;i++) g_fd[i].s=g_fd[i].w=INVALID_SOCKET; g_fdinit=1; net_startup(); } }
@@ -641,7 +641,7 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       pin(fd);
       /* online play: port 443 of the host goes to its built-in server (online.c), which listens on a high port */
       { extern u16 online_port(void); if(ntohs(to.sin_port)==443 && ntohl(to.sin_addr.s_addr)==online_host_ip()) to.sin_port=htons(online_port()); }
-      { char t[20]; ip_str(ntohl(to.sin_addr.s_addr),t); LOG("lan: socket %u connects to %s:%u\n",fd,t,ntohs(to.sin_port)); }
+      { char t[20]; ip_str(ntohl(to.sin_addr.s_addr),t); LOG("lan: socket %u connects to %s:%u\n",fd,t,ntohs(to.sin_port)); extern u16 online_port(void); g_fd[fd].online= ntohs(to.sin_port)==online_port(); }
       int r=connect(g_fd[fd].s,(struct sockaddr*)&to,sizeof to);
       if(r) bsd_fail(c,1); else bsd_ret(c,0,0); return 0; }
     case 15: case 16: {
@@ -689,7 +689,10 @@ int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
       if(lv==0xFFFF && on==0x200) on=SO_REUSEADDR;     /* SO_REUSEPORT */
       if(setsockopt(g_fd[fd].s,hl,on,v,vl)){ static int said; if(said<20){ said++; LOG("lan: setsockopt %d/%d ignored (error %d)\n",lv,on,SOCK_ERR); } }
       bsd_ret(c,0,0); return 0; }
-    case 22: if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; } shutdown(g_fd[fd].s,(int)in32(c,4)); bsd_ret(c,0,0); return 0;
+    case 22: if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
+      /* SWR_ONLINE_BT=1: who shuts a connection to the host server down (the game gives up on it) */
+      if(g_fd[fd].online && getenv("SWR_ONLINE_BT")){ static int said; if(said<6){ said++; LOG("lan: socket %u to the server shut down by:\n",fd); extern void ipc_backtrace(IpcCtx*); ipc_backtrace(c); } }
+      shutdown(g_fd[fd].s,(int)in32(c,4)); bsd_ret(c,0,0); return 0;
     case 23: bsd_ret(c,0,0); return 0;
     case 26: {
       if(!fd_ok(fd)){ bsd_ret(c,-1,9); return 0; }
