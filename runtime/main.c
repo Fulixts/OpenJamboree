@@ -260,6 +260,13 @@ static const IniOpt INI_FG[]={
   {"lossless_path","","Path to LosslessScaling.exe (empty = search in Steam)"},
   {NULL,NULL,NULL}};
 
+static const IniOpt INI_LAN[]={
+  {"lan_interface","","Network for local wireless play (LAN or ZeroTier): the IP of the adapter to use, e.g. 10.147.17.5.\n;   Empty = a ZeroTier adapter if there is one, else the one with internet. The Esc menu lists them"},
+  {"online","0","Work in progress (docs/ONLINE_SPEC.md): 1 = tell the game it is online so its online mode can be traced. Leave 0"},
+  {"online_host","","Online play: the ZeroTier IP of the player who hosts (their game plays Nintendo's servers). Empty = this PC hosts"},
+  {"lan_peers","","Other PCs that also get every room announcement as unicast, separated by commas (VPNs without broadcast,\n;   or 127.0.0.2 to test two copies of the game on one PC with lan_interface=127.0.0.1)"},
+  {NULL,NULL,NULL}};
+
 static const IniOpt INI_AUDIO[]={
   {"audio_slowdown","1","1 = slow live audio smoothly when the PC cannot keep up; retain every queued sample (F1)"},
   {NULL,NULL,NULL}};
@@ -279,7 +286,7 @@ static const IniOpt INI_GAME[]={
   {"game_dump","","Folder with YOUR OWN dump of the game: the one with exefs and romfs inside (nothing is copied).\n;   Empty = the <name>_data folder next to this program. If neither has the game, you are asked for the folder"},
   {NULL,NULL,NULL}};
 
-static const IniSec INI_SECS[]={{"Game",INI_GAME},{"Display",INI_DISPLAY},{"Controls",INI_INPUT},{"Graphics",INI_GRAPHICS},{"Performance",INI_PERF},{"Frame generation",INI_FG},{"Audio",INI_AUDIO},{"Recording",INI_REC},{"Debug",INI_DBG},{NULL,NULL}};
+static const IniSec INI_SECS[]={{"Game",INI_GAME},{"Display",INI_DISPLAY},{"Controls",INI_INPUT},{"Graphics",INI_GRAPHICS},{"Performance",INI_PERF},{"Frame generation",INI_FG},{"LAN",INI_LAN},{"Audio",INI_AUDIO},{"Recording",INI_REC},{"Debug",INI_DBG},{NULL,NULL}};
 
 static char g_ini_path[1400]; static u64 g_ini_mtime;
 

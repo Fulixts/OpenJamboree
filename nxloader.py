@@ -55,6 +55,13 @@ def align(x, a=PAGE):
 BUILTIN_PATCHES = [
     ('main', 'E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348', 0x805BD0, 0x360041E8, 0x1400020F,
      'Ocarina of Time: full resolution (tbz w8, #0 -> b)'),
+    # Super Mario Party Jamboree 2.3.0: the online mode talks to the host's own server (docs/ONLINE_SPEC.md). gRPC's
+    # ssl_check_peer refuses the name of the Gamesync channel's target (the auth and matchmaking channels pass), so
+    # Pia drops that connection right after the TLS handshake and the players never meet. the branch to the "Peer
+    # name ... is not in peer certificate" error becomes a nop: the check goes on and builds the auth context as for
+    # a match. online play only ever reaches the host (lan.c resolves Nintendo's names to it)
+    ('main', 'D70CE1726C979E45ED4200E9C2B23B2A258FDC18', 0xACA000, 0x340002C0, 0xD503201F,
+     'Super Mario Party Jamboree: gRPC peer name check passes for the online host (cbz w0 -> nop)'),
 ]
 
 

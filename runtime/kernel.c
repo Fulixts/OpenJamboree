@@ -550,6 +550,16 @@ static const char* gsym(u64 a){
   snprintf(o,200," <%.150s+%llx>",(const char*)GP(g_gstr[g_gsyms[best].mod]+g_gsyms[best].name_off),(unsigned long long)(a-g_gsyms[best].addr));
   return o; }
 
+static void guest_backtrace(CPU* c);
+/* the frame chain plus a scan of the stack for return addresses (a value in the code range whose previous word is
+   a BL/BLR): code built without frame pointers breaks the chain, the scan still shows who called */
+void guest_backtrace_ext(CPU* c){ guest_backtrace(c);
+  u64 sp=c->x[31]; MemBlock b; mem_query(sp,&b); if(b.state==MS_FREE || b.state==MS_INACCESSIBLE) return;
+  u64 end=b.addr+b.size; if(end>sp+0x4000) end=sp+0x4000; int n=0;
+  for(u64 a=sp&~7ull;a+8<=end && n<40;a+=8){ u64 v=gr64(a);
+    if(v<g_code_lo+4 || v>=g_code_hi || (v&3)) continue;
+    u32 w=gr32(v-4); if((w&0xFC000000u)!=0x94000000u && (w&0xFFFFFC1Fu)!=0xD63F0000u) continue;
+    WARN("   ~ sp+%llx %llx%s\n",(unsigned long long)(a-sp),(unsigned long long)v,gsym(v)); n++; } }
 static void guest_backtrace(CPU* c){
   WARN("  pc=%llx lr=%llx sp=%llx fp=%llx\n",(unsigned long long)c->pc,(unsigned long long)c->x[30],(unsigned long long)c->x[31],(unsigned long long)c->x[29]);
   { /* this also runs from the crash handler: a fault here would kill the report */
@@ -676,9 +686,49 @@ static void hle_fn_trace(CPU* RESTRICT c, u64 entry){
 static u64 g_td_lo, g_td_hi, g_td_clo, g_td_chi; static GuestFn* g_td_orig; static u8* g_td_seen;
 static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
   u64 i=(entry-g_td_lo)/4; u64 lr=c->x[30];
-  if(lr>=g_td_clo && lr<g_td_chi && !g_td_seen[i]){ g_td_seen[i]=1;
-    LOG("dyn: %llx from %llx (%llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2]); }
-  g_td_orig[i](c,entry); }
+  /* SWR_POKE_LOGLEVEL=gotaddr,value (hex,dec): on the first traced call, store value in the u32 the GOT entry at
+     gotaddr points to (a game's log level, so its log formatting runs). SWR_TRACE_DYN_STR=1: for calls from
+     [clo,chi), print the string the callee left at x0 (a vsnprintf buffer) and nothing else, with no count limit */
+  { static int poked; if(!poked){ poked=1; const char* p=getenv("SWR_POKE_LOGLEVEL");
+      if(p){ unsigned long long ga=0; int v=0; if(sscanf(p,"%llx,%d",&ga,&v)==2){ u64 t=gr64(ga); if(t>=AS_BASE && t<AS_SIZE){ u32 w=(u32)v; memcpy(GP(t),&w,4); LOG("dyn: log level at %llx set to %d\n",(unsigned long long)t,v); } } } } }
+  { static int str=-1; if(str<0) str=getenv("SWR_TRACE_DYN_STR")!=NULL;
+    if(str && lr>=g_td_clo && lr<g_td_chi){ u64 buf=c->x[0]; g_td_orig[i](c,entry);
+      if(buf>=AS_BASE && buf<AS_SIZE){ char s[400]; int k=0; const u8* p=GP(buf); while(k<399 && p[k]){ s[k]= p[k]>=0x20 && p[k]<0x7f? (char)p[k] : '.'; k++; } s[k]=0;
+        if(k) LOG("[bex] %s\n",s);
+        /* SWR_BEX_BT=text: the guest stack when a message containing text is logged (who decided it) */
+        { const char* bt=getenv("SWR_BEX_BT"); static int nb; if(bt && k && strstr(s,bt) && nb<4){ nb++; void guest_backtrace_ext(CPU*); guest_backtrace_ext(c);
+            LOG("[bex]   x19..x28: %llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",(unsigned long long)c->x[19],(unsigned long long)c->x[20],(unsigned long long)c->x[21],(unsigned long long)c->x[22],(unsigned long long)c->x[23],(unsigned long long)c->x[24],(unsigned long long)c->x[25],(unsigned long long)c->x[26],(unsigned long long)c->x[27],(unsigned long long)c->x[28]);
+            u64 p=c->x[28]; if(p>=AS_BASE && p+8<=AS_SIZE){ u64 im=gr64(p); if(im>=AS_BASE && im+0x10e0<=AS_SIZE) LOG("[bex]   result field (impl+0x10d8) = %u\n",gr32(im+0x10d8)); } } } }
+      return; } }
+  static int mx=-1; if(mx<0){ const char* e=getenv("SWR_TRACE_DYN_MAX"); mx= e? atoi(e) : 4; if(mx>250) mx=250; }
+  static int dg=-1; if(dg<0) dg=getenv("SWR_DUMP_GRPC")!=NULL;
+  int show= lr>=g_td_clo && lr<g_td_chi && (g_td_seen[i]<mx || dg);
+  if(show){ g_td_seen[i]++;
+    LOG("dyn: %llx from %llx (%llx, %llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2],(unsigned long long)c->x[3]); }
+  /* SWR_DUMP_GRPC=1: the call is grpc_call_start_batch(call, ops, nops, tag): print the initial metadata of the
+     batch (grpc_op is 0x50 bytes, op 0 = SEND_INITIAL_METADATA {count @+16, grpc_metadata* @+24}; grpc_metadata is
+     two 32-byte grpc_slice (refcount==0: inlined length u8 @+8, bytes @+9; else length @+8, bytes* @+16) + 32) */
+  if(show && getenv("SWR_DUMP_GRPC")){
+    u64 ops=c->x[2], nops=c->x[3];   /* CoreCodegen::grpc_call_start_batch(this, call, ops, nops, ...) */
+    for(u64 k=0;k<nops && k<8;k++){ u32 op; memcpy(&op,GP(ops+k*0x50),4); u32 fl; memcpy(&fl,GP(ops+k*0x50+4),4);
+      LOG("grpc: op %u flags %x\n",op,fl);
+      if(op!=0) continue;
+      u64 cnt,md; memcpy(&cnt,GP(ops+k*0x50+16),8); memcpy(&md,GP(ops+k*0x50+24),8);
+      LOG("grpc: %llu metadata at %llx\n",(unsigned long long)cnt,(unsigned long long)md);
+      for(u64 r=0;r<cnt*96 && r<4*96;r+=32){ u64 w[4]; memcpy(w,GP(md+r),32);
+        LOG("grpc:   +%03llx %016llx %016llx %016llx %016llx\n",(unsigned long long)r,(unsigned long long)w[0],(unsigned long long)w[1],(unsigned long long)w[2],(unsigned long long)w[3]); }
+      for(u64 m=0;m<cnt && m<32;m++){ char kv[2][200];
+        for(int h=0;h<2;h++){ u64 sl=md+m*96+h*32, rc; memcpy(&rc,GP(sl),8); u64 len; const u8* p;
+          if(!rc){ len=*GP(sl+8); p=GP(sl+9); } else { u64 bp; memcpy(&len,GP(sl+8),8); memcpy(&bp,GP(sl+16),8); p=GP(bp); }
+          int o=0; for(u64 q=0;q<len && o<190;q++){ u8 ch=p[q]; if(ch>=0x20 && ch<0x7F) kv[h][o++]=(char)ch; else o+=snprintf(kv[h]+o,8,"\\x%02x",ch); } kv[h][o]=0; }
+        LOG("grpc:   [%llu] '%s' = '%s'\n",(unsigned long long)m,kv[0],kv[1]); } } }
+  g_td_orig[i](c,entry);
+  if(show) LOG("dyn: %llx returned %llx\n",(unsigned long long)entry,(unsigned long long)c->x[0]);
+  /* SWR_TRACE_DYN_CHANGES=1: past the first calls, still log a target's return whenever it differs from its last
+     one (for functions polled every frame, such as a result getter) */
+  else if(lr>=g_td_clo && lr<g_td_chi){ static int ch=-1; if(ch<0) ch=getenv("SWR_TRACE_DYN_CHANGES")!=NULL;
+    static u64* last; if(ch && !last) last=calloc((size_t)((g_td_hi-g_td_lo)/4),8);
+    if(ch && last && last[i]!=c->x[0]+1){ last[i]=c->x[0]+1; LOG("dyn: %llx from %llx now returns %llx\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0]); } } }
 
 static int heap_fn_wanted(const char* nm){
   if(strncmp(nm,"_ZN4sead7ExpHeap",16) && strncmp(nm,"_ZNK4sead7ExpHeap",17)) return 0;

@@ -19,6 +19,10 @@ void backend_window_size(int* w, int* h);
 void backend_request_fullscreen(int on);
 int backend_is_fullscreen(void);
 void backend_request_quit(void);
+int lan_menu_ifaces(char labels[][128], char ips[][20], int max);
+void lan_status(char* out, int n);
+const char* lan_if_name(void);
+unsigned lan_ip(void);
 extern char g_exename[];
 }
 
@@ -202,6 +206,34 @@ static void tab_controls(void) {
   ImGui::TextWrapped("Esc = este menu (no controle: View + Menu)   F3 = captura de tela   F7 = gravar vídeo   F11 = tela cheia");
 }
 
+static void tab_network(void) {
+  ImGui::TextWrapped("Jogo local sem fio pela rede: todos no mesmo LAN ou na mesma rede ZeroTier, sem servidor. "
+                     "Quem cria a sala e quem entra usam o menu de jogo local do próprio jogo.");
+  ImGui::SeparatorText("Rede usada");
+  static char labels[16][128], ips[16][20]; static int n = -1;
+  if (n < 0 || ImGui::Button("Procurar adaptadores")) n = lan_menu_ifaces(labels, ips, 16);
+  const char* cur = ini_value("lan_interface", "");
+  const char* shown = *cur ? cur : "Automático (ZeroTier, senão a rede com internet)";
+  for (int i = 0; i < n; i++) if (!strcmp(cur, ips[i])) shown = labels[i];
+  if (ImGui::BeginCombo("Adaptador", shown)) {
+    if (ImGui::Selectable("Automático (ZeroTier, senão a rede com internet)", !*cur)) ini_set_apply("lan_interface", "");
+    for (int i = 0; i < n; i++) if (ImGui::Selectable(labels[i], !strcmp(cur, ips[i]))) ini_set_apply("lan_interface", ips[i]);
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Vale ao abrir o jogo local de novo. Todos os PCs precisam estar na mesma sub-rede.");
+  unsigned ip = lan_ip();
+  ImGui::Text("Em uso: %s  %u.%u.%u.%u", lan_if_name(), ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
+  ImGui::SeparatorText("PCs extras (opcional)");
+  static char peers[256]; static bool loaded;
+  if (!loaded) { snprintf(peers, sizeof peers, "%s", ini_value("lan_peers", "")); loaded = true; }
+  if (ImGui::InputText("IPs dos outros PCs", peers, sizeof peers)) ini_set_apply("lan_peers", peers);
+  ImGui::TextDisabled("Só para VPNs sem broadcast (Tailscale). Na ZeroTier normal deixe vazio.");
+  ImGui::SeparatorText("Sala");
+  char st[96]; lan_status(st, sizeof st);
+  ImGui::Text("Estado: %s", st);
+  ImGui::TextDisabled("O Windows marca a rede ZeroTier como Pública e bloqueia a porta 11452: marque-a como Privada.");
+}
+
 static void tab_about(void) {
   ImGui::TextWrapped("OpenJamboree: Super Mario Party Jamboree recompilado para PC a partir da sua própria cópia do jogo.");
   ImGui::Spacing();
@@ -233,6 +265,7 @@ extern "C" void menu_draw_gl(void) {
     if (ImGui::BeginTabItem("Jogo")) { tab_game(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Gráficos")) { tab_graphics(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Controles")) { tab_controls(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("Rede")) { tab_network(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Sobre")) { tab_about(); ImGui::EndTabItem(); }
     ImGui::EndTabBar();
   }

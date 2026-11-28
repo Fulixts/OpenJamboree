@@ -176,6 +176,9 @@ SvcObj* ipc_in_obj(IpcCtx* c, int i){
   KSession* s=(KSession*)h_get_type(c->move_h[i],KO_SESSION); if(!s || !s->obj) return NULL;
   __atomic_add_fetch(&s->obj->refs,1,__ATOMIC_SEQ_CST); return s->obj; }
 
+/* the guest call stack of an IPC request (debugging: who asked for this) */
+void ipc_backtrace(IpcCtx* c){ extern void guest_backtrace_ext(CPU*); if(c && c->th) guest_backtrace_ext(&c->th->cpu); }
+
 void ipc_handle(KThread* t, u32 handle, u64 msg_addr){
   CPU* cpu=&t->cpu;
   KSession* s=(KSession*)h_get_type(handle,KO_SESSION);

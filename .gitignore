@@ -127,3 +127,11 @@ frames.csv
 
 # ---- our own art (icon for the Recomp Launcher catalog) ----
 !docs/art/*.png
+*_online/
+
+# ---- built by tools/build_net_libs.py ----
+runtime/mbedtls/win/
+runtime/mbedtls/lin/
+runtime/nghttp2/win/
+runtime/nghttp2/lin/
+_work/obj_*/

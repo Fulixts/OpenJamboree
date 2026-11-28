@@ -30,7 +30,7 @@ import nxloader, codegen
 
 RT = os.path.join(HERE, 'runtime')
 RUNTIME_SRC = ['plat', 'mem', 'kernel', 'ipc', 'svc_core', 'audio', 'svc_hid', 'svc_fs', 'svc_vi', 'nvdrv', 'svc_ns2', 'sm86', 'gpu', 'gpu_engines',
-               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue']
+               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue', 'lan']
 ABI = 1
 # portable compilers next to us: tcc\, the GCC package (gcc\), w64devkit
 CC_DIRS = [os.path.join(HERE, *d) for d in (('tcc',), ('tools', 'tcc'), ('gcc', 'bin'), ('gcc', 'Library', 'bin'),
@@ -294,6 +294,11 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if target_win and backend == 'win32': srcs += [os.path.join(RT, 'rec_win32.c')]   # F7 recorder, Media Foundation
     # OpenJamboree: in-game Esc menu (runtime/menu.cpp) with Dear ImGui (MIT, runtime/imgui)
     menu = target_win and backend == 'win32'
+    # OpenJamboree online play: the host's built-in server (runtime/online.c) on Mbed TLS + nghttp2, built once by
+    # tools/build_net_libs.py into runtime/{mbedtls,nghttp2}/<os>/; without them the runtime builds without hosting
+    netlibs = [os.path.join(RT, 'mbedtls', 'win' if target_win else 'lin', 'libmbedtls.a'), os.path.join(RT, 'nghttp2', 'win' if target_win else 'lin', 'libnghttp2.a')]
+    online = gl and all(os.path.isfile(x) for x in netlibs)
+    srcs += [os.path.join(RT, 'online.c'), os.path.join(RT, 'npln.c')] if online else [os.path.join(RT, 'online_stub.c')]
     if menu: srcs += [os.path.join(RT, 'menu.cpp')] + [os.path.join(RT, 'imgui', f) for f in
                       ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_opengl3.cpp')]
     # NVDEC/VIC video: link OpenH264 (BSD) statically if we have it for this target
@@ -315,6 +320,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if not h264: cmd += ['-DSWR_NO_H264']
     if not opus: cmd += ['-DSWR_NO_OPUS']
     if vp9: cmd += ['-DSWR_HAVE_VP9', '-I', os.path.join(RT, 'vp9', 'include')]
+    if online: cmd += ['-I', os.path.join(RT, 'mbedtls', 'include'), '-I', os.path.join(RT, 'nghttp2', 'lib', 'includes')] + netlibs + (['-lbcrypt'] if target_win else [])
     if spvc: cmd += [spvc]
     # renderer=vulkan: the NVN layer (runtime/nvn, built by tools/build_nvn.py into build/nvn/libnvn.a), Windows only
     nvn_lib = os.path.join(HERE, 'build', 'nvn', 'libnvn.a')
@@ -329,7 +335,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
         # static on Linux too, so the runtime doesn't depend on the libstdc++ version of the distro
         cmd += ['-lstdc++'] if target_win else ['-Wl,-Bstatic', '-lstdc++', '-Wl,-Bdynamic', '-static-libgcc']
     if target_win:
-        cmd += ['-static', '-lgdi32', '-lwinmm', '-luser32', '-lopengl32', '-lcomdlg32', '-lshell32', '-mwindows' if backend == 'win32' else '-mconsole']
+        cmd += ['-static', '-lws2_32', '-liphlpapi', '-lgdi32', '-lwinmm', '-luser32', '-lopengl32', '-lcomdlg32', '-lshell32', '-mwindows' if backend == 'win32' else '-mconsole']
         if backend == 'win32': cmd += ['-lmfplat', '-lmfreadwrite', '-lmfuuid', '-lole32']
     else:
         cmd += ['-lpthread', '-ldl', '-lm', '-rdynamic']

@@ -83,6 +83,7 @@ def main():
         raise SystemExit('macOS is not supported yet: see docs/PLATFORMS.md (OpenGL 4.1 limit and 16 KB pages on Apple Silicon).')
     else:
         raise SystemExit('unsupported system: ' + sys.platform)
+    run([sys.executable, '-u', os.path.join(HERE, 'tools', 'build_net_libs.py')], 'Mbed TLS and nghttp2 (online play host)')
     if a.deps_only: return
     run([sys.executable, '-u', os.path.join(HERE, 'switchrecomp.py'), '--build-runtime', '--cc', cc], 'the runtime')
     say('\nReady. Build the game from your dump:\n'
