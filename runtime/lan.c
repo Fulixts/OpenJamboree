@@ -546,6 +546,13 @@ static int do_poll(u8* pf, int n, int timeout_ms){
   return cnt; }
 
 int lan_bsd_disp(SvcObj* o, IpcCtx* c){ (void)o;
+  /* SWR_VTSLOT=gotaddr,offset (hex): once the object the GOT entry points to exists, log its vtable slot (a target
+     address to trace, e.g. gRPC CoreCodegen::grpc_call_start_batch) */
+  { static int st=-1; static u64 ga, off; if(st<0){ const char* p=getenv("SWR_VTSLOT"); unsigned long long x=0,y=0; st= p && sscanf(p,"%llx,%llx",&x,&y)==2; ga=x; off=y; }
+    if(st==1){ u64 v=gr64(ga); if(v>=AS_BASE && v<AS_SIZE){ u64 o=gr64(v); if(o>=AS_BASE && o<AS_SIZE){ u64 vt=gr64(o); if(vt>=AS_BASE && vt<AS_SIZE){ LOG("lan: vtable slot %llx of the object at %llx -> %llx\n",(unsigned long long)off,(unsigned long long)o,(unsigned long long)gr64(vt+off)); st=2; } } } } }
+  /* SWR_POKE_LOGLEVEL=gotaddr,value: keep a game log level up (the game resets it), see kernel.c */
+  { static int st=-1; static u64 ga; static int v; if(st<0){ const char* p=getenv("SWR_POKE_LOGLEVEL"); unsigned long long x=0; st= p && sscanf(p,"%llx,%d",&x,&v)==2; ga=x; }
+    if(st){ u64 t=gr64(ga); if(t>=AS_BASE && t<AS_SIZE){ u32 w=(u32)v; memcpy(GP(t),&w,4); } } }
   fd_init();
   u64 a,s,b,bs; u32 fd=in32(c,0);
   switch(c->cmd){

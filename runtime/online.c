@@ -154,6 +154,10 @@ static int on_frame(nghttp2_session* h, const nghttp2_frame* f, void* u){ (void)
   if((f->hd.type==NGHTTP2_HEADERS || f->hd.type==NGHTTP2_DATA) && (f->hd.flags&NGHTTP2_FLAG_END_STREAM)){
     Stream* s=stream_get((Conn*)u,f->hd.stream_id,0); if(s) grpc_call((Conn*)u,s); }
   return 0; }
+static int on_send(nghttp2_session* h, const nghttp2_frame* f, void* u){ (void)h; (void)u;
+  static int on=-1; if(on<0) on=getenv("SWR_ONLINE_FRAMES")!=NULL;
+  if(on) LOG("online: sent frame type %u flags %x stream %d length %u\n",f->hd.type,f->hd.flags,f->hd.stream_id,(unsigned)f->hd.length);
+  return 0; }
 static int on_close(nghttp2_session* h, int32_t id, uint32_t e, void* u){ (void)h; (void)e; stream_drop((Conn*)u,id); return 0; }
 
 static int flush_h2(Conn* c){
@@ -175,6 +179,7 @@ static void conn_thread(void* arg){
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cb,on_data);
   nghttp2_session_callbacks_set_on_frame_recv_callback(cb,on_frame);
   nghttp2_session_callbacks_set_on_stream_close_callback(cb,on_close);
+  nghttp2_session_callbacks_set_on_frame_send_callback(cb,on_send);
   nghttp2_session_server_new(&c->h2,cb,c); nghttp2_session_callbacks_del(cb);
   nghttp2_settings_entry se[]={{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,100}};
   nghttp2_submit_settings(c->h2,NGHTTP2_FLAG_NONE,se,1);

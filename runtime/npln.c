@@ -183,6 +183,22 @@ static void ss_add(Session* s, const Ticket* t){
     snprintf(s->user[s->nu],sizeof s->user[0],"%s",t->user[i]);
     s->defs[s->nu]=malloc(t->defn[i]+1); memcpy(s->defs[s->nu],t->defs[i],t->defn[i]); s->defn[s->nu]=t->defn[i]; s->nu++; } }
 
+/* the room takes the searchers' attributes as its properties (nn.npln.common.MapValue: repeated KeyValue {1 key,
+   2 Value} at field 1): a matchmaker only places players in a room of the mode they asked for, and the game checks
+   the room's gameMode against its own after joining. keys the room already has are replaced, others added */
+static int kv_key(const u8* kv, size_t n, char* key, size_t cap){ pb_getstr(kv,n,1,key,cap); return *key!=0; }
+static void props_merge(Session* s, const u8* def, size_t dn){
+  const u8* at; size_t an; if(!pb_get(def,dn,2,&at,&an,NULL)) return;           /* UserDefinition.attributes */
+  PB out={0}; size_t o=0; const u8* kv; size_t kn; char key[64];
+  /* keep the room's own entries the attributes do not name */
+  while(s->propn && pb_next(s->props,s->propn,1,&o,&kv,&kn)){
+    if(!kv_key(kv,kn,key,sizeof key)) continue;
+    size_t o2=0; const u8* kv2; size_t kn2; char k2[64]; int dup=0;
+    while(pb_next(at,an,1,&o2,&kv2,&kn2)) if(kv_key(kv2,kn2,k2,sizeof k2) && !strcmp(k2,key)) dup=1;
+    if(!dup) pb_bytes(&out,1,kv,kn); }
+  o=0; while(pb_next(at,an,1,&o,&kv,&kn)){ pb_bytes(&out,1,kv,kn); if(kv_key(kv,kn,key,sizeof key)) LOG("online: room %s takes %s from the search\n",s->name,key); }
+  free(s->props); s->props=out.p; s->propn=out.n; }
+
 /* settles pending tickets (lock held; called from every stream poll) */
 static void mm_tick(void){
   i64 now=(i64)time(NULL);
@@ -210,14 +226,20 @@ static void mm_tick(void){
     if(s && s->nu+users-1>mm_size()) s=NULL;
     if(!s){ s=calloc(1,sizeof *s); s->id=g_ssid++; s->born=now; snprintf(s->config,sizeof s->config,"%s",t->config);
       snprintf(s->name,sizeof s->name,"%s/gameSessions/%08x",*t->parent? t->parent : "tenants/current",s->id); s->next=g_ss; g_ss=s; }
+    if(ng && grp[0]->nu) props_merge(s,grp[0]->defs[0],grp[0]->defn[0]);
     for(int i=0;i<ng;i++){ ss_add(s,grp[i]); grp[i]->state=3; grp[i]->session=s->id; }
     LOG("online: matchmaking put %d player(s) in room %s (%d/%d)\n",users,s->name,s->nu,mm_size()); } }
 
 /* a JWT-shaped matchmaking id token (unsigned placeholder signature): the SDK may decode it */
+/* the claims carry the user session the way Pia's Gamesync client reads it back (its keys in the game: uid, ussid,
+   ucsid, st, att, ltc, tn = user, user session seq id, user connection seq id, status, attributes, latency, team) */
 static void mm_token(char* o, size_t cap, const Session* s, const char* us, const char* user){
-  char js[700], body[1000]; i64 now=(i64)time(NULL);
+  char js[900], body[1300]; i64 now=(i64)time(NULL); int seq=1;
+  for(int i=0;i<s->nu;i++) if(!strcmp(s->user[i],user)) seq=i+1;
+  const char* uid=strrchr(user,'/'); uid= uid? uid+1 : user;
   snprintf(js,sizeof js,"{\"iss\":\"https://t-adf89f68-lp1.lp1.t.npln.srv.nintendo.net\",\"sub\":\"%s\",\"aud\":\"%s\",\"iat\":%lld,\"exp\":%lld,"
-    "\"typ\":\"matchmaking_id_token\",\"game_session\":\"%s\",\"user_session\":\"%s\"}",user,s->name,(long long)now,(long long)now+86400,s->name,us);
+    "\"typ\":\"matchmaking_id_token\",\"game_session\":\"%s\",\"user_session\":\"%s\",\"uid\":\"%s\",\"ussid\":%d,\"ucsid\":%d,\"st\":2,\"tn\":\"\"}",
+    user,s->name,(long long)now,(long long)now+86400,s->name,us,uid,seq,seq);
   b64u((const u8*)js,strlen(js),body);
   snprintf(o,cap,"eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.%s.b3BlbmphbWJvcmVlLWxvY2FsLXNpZ25hdHVyZQ",body); }
 

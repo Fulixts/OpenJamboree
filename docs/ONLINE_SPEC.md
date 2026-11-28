@@ -313,6 +313,52 @@ repo's licence before copying `.proto` files verbatim.
 
 ---
 
+## 5. Status (2026-11-28)
+
+Tested with two copies of the game on one PC (`_work/online_pair.ps1`: host + a second copy with
+`online_host=127.0.0.1`, `online_user=amigo`), all in background mode.
+
+What works, in order:
+
+1. Auth (CreateUser, IssueToken, IssuePrearrangedUserToken) and Ugcstore (GetDocument, CommitDocuments) on the host's
+   built-in server (`runtime/online.c` + `runtime/npln.c`).
+2. Access tokens are ES256-shaped JWTs whose payload carries `sub` (user id) and `npln.tid`; the server reads the
+   caller back from `sub`. With plain-string tokens the game could not find itself in the matchmaking result and
+   failed with `GetResultNplnSessionRpc` = 9.
+3. Matchmaking: the game opens its own room (`CreateGameSessionCreationTicket`, config `BqP1MatchmakingConfigs`, with
+   room properties `_Bex_PropIsHost`, `gameMode`, `_Bex_PropIsVoiceChat`) and then searches
+   (`CreateMatchmakingTicket`, `BqP4MatchmakingConfigs`, user attribute `gameMode`). The host groups searchers into
+   the room of whoever searched first; Track*Ticket are gRPC server streams. Players are told apart by the caller's
+   token (requests only say `users/current`).
+4. `nxloader.py` patches the 2.3.0 `main` so gRPC's `ssl_check_peer` accepts the target name of the post-match channel
+   (`0xACA000`, `cbz w0` → `nop`). Without it the client dropped the connection right after the TLS handshake.
+
+Where it stops: about 1 s after the match both games run bex "Disconnection Start". bex logs
+`bex::NetworkModuleImpl ... result=12` (a fixed label for a failed join) with the stored join status
+**14 (`UNAVAILABLE`)**. The only network activity in that second is one new TLS + HTTP/2 connection to the host
+(`SETTINGS`, `WINDOW_UPDATE`, `PING`, never a `HEADERS`), so the call fails inside the client before it is sent.
+Leading guess: a per-call credentials step (gRPC fails such calls as `UNAVAILABLE` without sending them), or a
+"wait for the channel to be ready" with a short deadline. Next check: `SWR_TRACE_DYN=8a43310-8a43314,8006000-b000000`
+with `SWR_DUMP_GRPC=1` dumps every `grpc_call_start_batch` (`0x8a43310` is `CoreCodegen::grpc_call_start_batch`,
+found through `SWR_VTSLOT=9aa0048,108`) to see whether that call ever starts and with which metadata.
+
+Not done yet: Gamesync itself (document store + the `KeepUserSession` bidirectional stream; bex reads user-session
+documents with fields `uid`, `ussid`, `ucsid`, `st`, `att`, `ltc`, `tn`), Pia traffic between the players, and the
+two-PC test over ZeroTier.
+
+Debug switches added along the way (all off unless set):
+
+| Variable | What it shows |
+|---|---|
+| `SWR_ONLINE_FRAMES=1` | every HTTP/2 frame received and sent by the built-in server |
+| `SWR_ONLINE_BT=1` | the guest stack when the game shuts down a connection to the server (frame chain + stack scan) |
+| `SWR_TRACE_DYN_MAX=n`, `SWR_TRACE_DYN_CHANGES=1` | more calls per traced target; log a polled function's return when it changes |
+| `SWR_TRACE_DYN_STR=1` + `SWR_POKE_LOGLEVEL=9a8c7e0,3` | the game's own bex log (trace `vsnprintf` at `a8061e0-a8061e4` from `8100000-8600000`) |
+| `SWR_BEX_BT=text` | stack, registers and the join status field when a bex message containing `text` is logged |
+| `SWR_VTSLOT=got,off` | logs the target of a vtable slot once the object exists (to find indirect call targets) |
+
+---
+
 ## References
 
 - **[OS]** OpenSmash-Ultimate, https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate, commit `657a4d06` Files cited inline.

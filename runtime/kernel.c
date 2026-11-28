@@ -694,10 +694,15 @@ static void hle_dyn_trace(CPU* RESTRICT c, u64 entry){
   { static int str=-1; if(str<0) str=getenv("SWR_TRACE_DYN_STR")!=NULL;
     if(str && lr>=g_td_clo && lr<g_td_chi){ u64 buf=c->x[0]; g_td_orig[i](c,entry);
       if(buf>=AS_BASE && buf<AS_SIZE){ char s[400]; int k=0; const u8* p=GP(buf); while(k<399 && p[k]){ s[k]= p[k]>=0x20 && p[k]<0x7f? (char)p[k] : '.'; k++; } s[k]=0;
-        if(k) LOG("[bex] %s\n",s); }
+        if(k) LOG("[bex] %s\n",s);
+        /* SWR_BEX_BT=text: the guest stack when a message containing text is logged (who decided it) */
+        { const char* bt=getenv("SWR_BEX_BT"); static int nb; if(bt && k && strstr(s,bt) && nb<4){ nb++; void guest_backtrace_ext(CPU*); guest_backtrace_ext(c);
+            LOG("[bex]   x19..x28: %llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",(unsigned long long)c->x[19],(unsigned long long)c->x[20],(unsigned long long)c->x[21],(unsigned long long)c->x[22],(unsigned long long)c->x[23],(unsigned long long)c->x[24],(unsigned long long)c->x[25],(unsigned long long)c->x[26],(unsigned long long)c->x[27],(unsigned long long)c->x[28]);
+            u64 p=c->x[28]; if(p>=AS_BASE && p+8<=AS_SIZE){ u64 im=gr64(p); if(im>=AS_BASE && im+0x10e0<=AS_SIZE) LOG("[bex]   result field (impl+0x10d8) = %u\n",gr32(im+0x10d8)); } } } }
       return; } }
   static int mx=-1; if(mx<0){ const char* e=getenv("SWR_TRACE_DYN_MAX"); mx= e? atoi(e) : 4; if(mx>250) mx=250; }
-  int show= lr>=g_td_clo && lr<g_td_chi && g_td_seen[i]<mx;
+  static int dg=-1; if(dg<0) dg=getenv("SWR_DUMP_GRPC")!=NULL;
+  int show= lr>=g_td_clo && lr<g_td_chi && (g_td_seen[i]<mx || dg);
   if(show){ g_td_seen[i]++;
     LOG("dyn: %llx from %llx (%llx, %llx, %llx, %llx)\n",(unsigned long long)entry,(unsigned long long)lr,(unsigned long long)c->x[0],(unsigned long long)c->x[1],(unsigned long long)c->x[2],(unsigned long long)c->x[3]); }
   /* SWR_DUMP_GRPC=1: the call is grpc_call_start_batch(call, ops, nops, tag): print the initial metadata of the
